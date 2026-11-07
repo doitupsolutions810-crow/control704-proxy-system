@@ -1,0 +1,13 @@
+{
+  "name": "control704-proxy-system",
+  "version": "1.0.0",
+  "description": "Control704 IT Technician authentication and access proxy via Avrone Due’Krey and Control12-lattice-op. Proxy X, Y, Z data set code override functionality.",
+  "main": "src/proxy.js",
+  "scripts": {
+    "start": "node src/proxy.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": ["proxy", "authentication", "Control704", "Avrone"],
+  "author": "Control704 IT Technician",
+  "license": "MIT"
+}
