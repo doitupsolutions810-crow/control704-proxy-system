@@ -5,9 +5,17 @@
   "main": "src/proxy.js",
   "scripts": {
     "start": "node src/proxy.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --test test/*.test.js"
   },
-  "keywords": ["proxy", "authentication", "Control704", "Avrone"],
+  "keywords": [
+    "proxy",
+    "authentication",
+    "Control704",
+    "Avrone"
+  ],
   "author": "Control704 IT Technician",
-  "license": "MIT"
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  }
 }

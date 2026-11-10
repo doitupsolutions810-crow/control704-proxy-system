@@ -1,0 +1,38 @@
+'use strict';
+// Pluggable authentication layer.
+// A provider is any object: { name: string, verify(token): Promise<claims> }.
+// verify() must throw (ideally an AuthError) for any invalid token.
+
+const { AuthError } = require('./avroneProvider');
+
+function extractBearer(req) {
+  const header = req.headers && req.headers.authorization;
+  if (!header || typeof header !== 'string') return null;
+  const m = /^Bearer\s+(\S+)$/i.exec(header.trim());
+  return m ? m[1] : null;
+}
+
+function toPrincipal(claims, providerName) {
+  const scopes = new Set();
+  if (typeof claims.scope === 'string') claims.scope.split(/\s+/).filter(Boolean).forEach((s) => scopes.add(s));
+  if (Array.isArray(claims.scp)) claims.scp.filter((s) => typeof s === 'string').forEach((s) => scopes.add(s));
+  const roles = Array.isArray(claims.roles) ? claims.roles.filter((r) => typeof r === 'string') : [];
+  return { sub: claims.sub, provider: providerName, roles, scopes, claims };
+}
+
+function createAuthenticator(provider) {
+  if (!provider || typeof provider.verify !== 'function') {
+    throw new Error('Auth provider must implement verify(token)');
+  }
+  return {
+    provider,
+    async authenticate(req) {
+      const token = extractBearer(req);
+      if (!token) throw new AuthError('Missing bearer token', 'missing_token');
+      const claims = await provider.verify(token);
+      return toPrincipal(claims, provider.name);
+    },
+  };
+}
+
+module.exports = { createAuthenticator, extractBearer, toPrincipal, AuthError };
