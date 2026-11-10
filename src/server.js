@@ -11,6 +11,10 @@ const { DatasetStore, ValidationError, NotFoundError } = require('./datasets/sto
 
 const MAX_BODY = 16 * 1024;
 
+class HttpError extends Error {
+  constructor(status, error, message) { super(message); this.status = status; this.error = error; }
+}
+
 function send(res, status, body, extraHeaders = {}) {
   const payload = JSON.stringify(body);
   res.writeHead(status, {
@@ -25,24 +29,37 @@ function send(res, status, body, extraHeaders = {}) {
 function readJson(req) {
   return new Promise((resolve, reject) => {
     const ct = req.headers['content-type'] || '';
-    if (!/^application\/json\b/i.test(ct)) {
-      reject(new ValidationError('content-type must be application/json'));
+    if (!/^application\/json\s*(;.*)?$/i.test(ct)) {
+      req.resume();
+      reject(new HttpError(415, 'unsupported_media_type', 'content-type must be application/json'));
+      return;
+    }
+    const declared = Number(req.headers['content-length']);
+    if (Number.isFinite(declared) && declared > MAX_BODY) {
+      req.resume();
+      reject(new HttpError(413, 'payload_too_large', 'Request body too large'));
       return;
     }
     let size = 0;
+    let tooBig = false;
     const chunks = [];
+    // Drain (rather than destroy) oversized bodies so a clean 413 can still be sent.
     req.on('data', (c) => {
+      if (tooBig) return;
       size += c.length;
-      if (size > MAX_BODY) {
-        reject(new ValidationError('Request body too large'));
-        req.destroy();
-        return;
-      }
+      if (size > MAX_BODY) { tooBig = true; chunks.length = 0; return; }
       chunks.push(c);
     });
     req.on('end', () => {
-      try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')); }
-      catch { reject(new ValidationError('Invalid JSON body')); }
+      if (tooBig) { reject(new HttpError(413, 'payload_too_large', 'Request body too large')); return; }
+      let parsed;
+      try { parsed = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); }
+      catch { reject(new ValidationError('Invalid JSON body')); return; }
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        reject(new ValidationError('JSON body must be an object'));
+        return;
+      }
+      resolve(parsed);
     });
     req.on('error', reject);
   });
@@ -80,14 +97,24 @@ function createApp({ provider, store = new DatasetStore(), audit = createAuditLo
 
   async function handle(req, res) {
     const requestId = crypto.randomUUID();
-    const url = new URL(req.url, 'http://localhost');
-    const base = { requestId, method: req.method, path: url.pathname };
+    let url;
+    try {
+      // Fixed base; only the path is used. Malformed request targets get 400 instead of
+      // an unhandled rejection that left the connection hanging.
+      url = new URL(req.url, 'http://localhost');
+    } catch {
+      return send(res, 400, { error: 'bad_request', message: 'Malformed request target' });
+    }
+    const base = { requestId, method: req.method, path: url.pathname.slice(0, 512) };
     let principal = null;
     try {
       const pathMatches = routes.filter(([, re]) => re.test(url.pathname));
       if (pathMatches.length === 0) return send(res, 404, { error: 'not_found' });
       const route = pathMatches.find(([m]) => m === req.method);
-      if (!route) return send(res, 405, { error: 'method_not_allowed' });
+      if (!route) {
+        const allow = [...new Set(pathMatches.map(([m]) => m))].join(', ');
+        return send(res, 405, { error: 'method_not_allowed' }, { allow });
+      }
       const [, re, scopeFn, handler] = route;
       const params = re.exec(url.pathname).slice(1);
 
@@ -98,7 +125,7 @@ function createApp({ provider, store = new DatasetStore(), audit = createAuditLo
           const code = err instanceof AuthError ? err.code : 'invalid_token';
           audit.log({ ...base, type: 'auth.failure', reason: code });
           return send(res, 401, { error: 'unauthorized', reason: code },
-            { 'www-authenticate': `Bearer realm="control704", error="${code === 'missing_token' ? 'invalid_request' : 'invalid_token'}"` });
+            { 'www-authenticate': `Bearer realm="control704", error="${code === 'missing_token' || code === 'invalid_request' ? 'invalid_request' : 'invalid_token'}"` });
         }
         const required = scopeFn(params);
         if (!hasScopes(principal, required)) {
@@ -112,6 +139,7 @@ function createApp({ provider, store = new DatasetStore(), audit = createAuditLo
       if (principal) audit.log({ ...base, type: 'request', actor: principal.sub, status });
       return send(res, status, body);
     } catch (err) {
+      if (err instanceof HttpError) return send(res, err.status, { error: err.error, message: err.message });
       if (err instanceof ValidationError) return send(res, 400, { error: 'validation_error', message: err.message, details: err.details || [] });
       if (err instanceof NotFoundError) return send(res, 404, { error: 'not_found', message: err.message });
       audit.log({ ...base, type: 'error', actor: principal && principal.sub, message: err.message });

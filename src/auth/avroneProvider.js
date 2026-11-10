@@ -15,10 +15,13 @@ class AuthError extends Error {
 }
 
 function b64urlDecode(str) {
-  if (typeof str !== 'string' || !/^[A-Za-z0-9_-]*$/.test(str)) {
+  if (typeof str !== 'string' || !/^[A-Za-z0-9_-]*$/.test(str) || str.length % 4 === 1) {
     throw new AuthError('Malformed token segment');
   }
-  return Buffer.from(str, 'base64url');
+  const buf = Buffer.from(str, 'base64url');
+  // Reject non-canonical encodings (e.g. non-zero trailing bits) to prevent token malleability.
+  if (buf.toString('base64url') !== str) throw new AuthError('Non-canonical base64url segment');
+  return buf;
 }
 
 function parseJson(buf) {
@@ -31,6 +34,12 @@ function parseJson(buf) {
   }
 }
 
+function parseIntStrict(v, name) {
+  if (v === undefined || v === null || v === '') return undefined;
+  if (!/^\d+$/.test(String(v).trim())) throw new Error(`${name} must be a non-negative integer`);
+  return Number.parseInt(String(v).trim(), 10);
+}
+
 function loadConfigFromEnv(env = process.env) {
   const secret = env.AVRONE_JWT_SECRET || '';
   const publicKey = env.AVRONE_JWT_PUBLIC_KEY ? env.AVRONE_JWT_PUBLIC_KEY.replace(/\\n/g, '\n') : '';
@@ -39,8 +48,8 @@ function loadConfigFromEnv(env = process.env) {
     audience: env.AVRONE_AUDIENCE || '',
     secret,
     publicKey,
-    clockSkewSec: Number.parseInt(env.AVRONE_CLOCK_SKEW_SEC || '30', 10),
-    maxTokenAgeSec: env.AVRONE_MAX_TOKEN_AGE_SEC ? Number.parseInt(env.AVRONE_MAX_TOKEN_AGE_SEC, 10) : null,
+    clockSkewSec: parseIntStrict(env.AVRONE_CLOCK_SKEW_SEC, 'AVRONE_CLOCK_SKEW_SEC') ?? 30,
+    maxTokenAgeSec: parseIntStrict(env.AVRONE_MAX_TOKEN_AGE_SEC, 'AVRONE_MAX_TOKEN_AGE_SEC') ?? null,
   };
 }
 
@@ -53,7 +62,16 @@ function validateConfig(cfg) {
   if (cfg.secret && Buffer.byteLength(cfg.secret) < 32) {
     throw new Error('AVRONE_JWT_SECRET must be at least 32 bytes');
   }
+  if (!Number.isInteger(cfg.clockSkewSec) || cfg.clockSkewSec < 0 || cfg.clockSkewSec > 300) {
+    throw new Error('AVRONE_CLOCK_SKEW_SEC must be an integer between 0 and 300');
+  }
+  if (cfg.maxTokenAgeSec !== null && cfg.maxTokenAgeSec !== undefined
+    && (!Number.isInteger(cfg.maxTokenAgeSec) || cfg.maxTokenAgeSec <= 0)) {
+    throw new Error('AVRONE_MAX_TOKEN_AGE_SEC must be a positive integer');
+  }
 }
+
+const isNumericDate = (v) => typeof v === 'number' && Number.isFinite(v);
 
 function createAvroneProvider(config = loadConfigFromEnv()) {
   validateConfig(config);
@@ -62,7 +80,15 @@ function createAvroneProvider(config = loadConfigFromEnv()) {
   if (config.secret) allowedAlgs.add('HS256');
   if (config.publicKey) {
     keyObject = crypto.createPublicKey(config.publicKey);
-    allowedAlgs.add(keyObject.asymmetricKeyType === 'ec' ? 'ES256' : 'RS256');
+    const t = keyObject.asymmetricKeyType;
+    if (t === 'rsa') {
+      if (keyObject.asymmetricKeyDetails.modulusLength < 2048) throw new Error('RSA key must be >= 2048 bits');
+      allowedAlgs.add('RS256');
+    } else if (t === 'ec' && keyObject.asymmetricKeyDetails.namedCurve === 'prime256v1') {
+      allowedAlgs.add('ES256');
+    } else {
+      throw new Error(`Unsupported public key type for AVRONE_JWT_PUBLIC_KEY: ${t}`);
+    }
   }
 
   function verifySignature(alg, signingInput, signature) {
@@ -93,27 +119,36 @@ function createAvroneProvider(config = loadConfigFromEnv()) {
       const payload = parseJson(b64urlDecode(p));
       const signature = b64urlDecode(s);
 
-      if (!allowedAlgs.has(header.alg)) {
-        throw new AuthError(`Algorithm not allowed: ${header.alg}`);
+      if (typeof header.alg !== 'string' || !allowedAlgs.has(header.alg)) {
+        throw new AuthError(`Algorithm not allowed: ${String(header.alg).slice(0, 20)}`);
       }
+      // We understand no critical header extensions, so any `crit` must be rejected (RFC 7515 4.1.11).
+      if (Object.prototype.hasOwnProperty.call(header, 'crit')) throw new AuthError('Unsupported crit header');
       if (!verifySignature(header.alg, `${h}.${p}`, signature)) {
         throw new AuthError('Invalid signature');
       }
 
       const now = Math.floor(Date.now() / 1000);
       const skew = config.clockSkewSec;
-      if (typeof payload.exp !== 'number') throw new AuthError('Token missing exp');
+      if (!isNumericDate(payload.exp)) throw new AuthError('Token missing exp');
       if (now - skew >= payload.exp) throw new AuthError('Token expired', 'token_expired');
-      if (typeof payload.nbf === 'number' && now + skew < payload.nbf) {
-        throw new AuthError('Token not yet valid');
+      if ('nbf' in payload) {
+        if (!isNumericDate(payload.nbf)) throw new AuthError('Invalid nbf');
+        if (now + skew < payload.nbf) throw new AuthError('Token not yet valid');
       }
-      if (config.maxTokenAgeSec && typeof payload.iat === 'number' && now - payload.iat > config.maxTokenAgeSec + skew) {
-        throw new AuthError('Token too old', 'token_expired');
+      if ('iat' in payload) {
+        if (!isNumericDate(payload.iat)) throw new AuthError('Invalid iat');
+        if (payload.iat > now + skew) throw new AuthError('Token issued in the future');
       }
-      if (payload.iss !== config.issuer) throw new AuthError('Invalid issuer');
+      if (config.maxTokenAgeSec) {
+        if (!isNumericDate(payload.iat)) throw new AuthError('Token missing iat');
+        if (now - payload.iat > config.maxTokenAgeSec + skew) throw new AuthError('Token too old', 'token_expired');
+      }
+      if (typeof payload.iss !== 'string' || payload.iss !== config.issuer) throw new AuthError('Invalid issuer');
       const aud = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
-      if (!aud.includes(config.audience)) throw new AuthError('Invalid audience');
-      if (typeof payload.sub !== 'string' || !payload.sub) throw new AuthError('Token missing sub');
+      if (!aud.some((a) => typeof a === 'string' && a === config.audience)) throw new AuthError('Invalid audience');
+      if (typeof payload.sub !== 'string' || !payload.sub || payload.sub.length > 256
+        || /[\u0000-\u001f\u007f]/.test(payload.sub)) throw new AuthError('Invalid sub');
 
       return payload;
     },

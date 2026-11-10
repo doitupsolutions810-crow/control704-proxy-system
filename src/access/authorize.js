@@ -12,7 +12,12 @@ const ROLE_SCOPES = Object.freeze({
 function effectiveScopes(principal, roleScopes = ROLE_SCOPES) {
   const out = new Set(principal.scopes || []);
   for (const role of principal.roles || []) {
-    for (const s of roleScopes[role] || []) out.add(s);
+    // Own-property lookup only: roles like "__proto__" or "constructor" must not resolve
+    // to Object.prototype members (previously crashed with a 500).
+    if (typeof role !== 'string' || !Object.prototype.hasOwnProperty.call(roleScopes, role)) continue;
+    const granted = roleScopes[role];
+    if (!Array.isArray(granted)) continue;
+    for (const s of granted) out.add(s);
   }
   return out;
 }

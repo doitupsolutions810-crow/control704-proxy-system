@@ -14,8 +14,11 @@ const DEFAULTS = Object.freeze({
 
 // Only these fields may be overridden. `auth` is deliberately immutable via override
 // so an override can never change how a route authenticates.
+const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
 const VALIDATORS = {
-  endpoint: (v) => typeof v === 'string' && /^\/proxy\/[a-z0-9][a-z0-9/_-]{0,63}$/.test(v) && !v.includes('..'),
+  endpoint: (v) => typeof v === 'string' && /^\/proxy\/[a-z0-9][a-z0-9/_-]{0,63}$/.test(v)
+    && !v.includes('..') && !v.includes('//') && !v.endsWith('/'),
   enabled: (v) => typeof v === 'boolean',
   upstream: (v) => {
     if (v === null) return true;
@@ -28,7 +31,7 @@ const VALIDATORS = {
   rateLimitPerMinute: (v) => Number.isInteger(v) && v >= 1 && v <= 10000,
   metadata: (v) => v !== null && typeof v === 'object' && !Array.isArray(v)
     && Object.keys(v).length <= 50
-    && Object.entries(v).every(([k, val]) => /^[A-Za-z0-9_.-]{1,64}$/.test(k)
+    && Object.entries(v).every(([k, val]) => /^[A-Za-z0-9_.-]{1,64}$/.test(k) && !FORBIDDEN_KEYS.has(k)
       && (typeof val === 'string' ? val.length <= 512 : (typeof val === 'number' || typeof val === 'boolean'))),
 };
 
@@ -82,7 +85,7 @@ class DatasetStore {
   override(id, patch, { actor, reason } = {}) {
     const ds = normalizeId(id);
     if (!actor) throw new ValidationError('actor is required');
-    if (typeof reason !== 'string' || reason.trim().length < 3 || reason.length > 500) {
+    if (typeof reason !== 'string' || reason.trim().length < 3 || reason.trim().length > 500) {
       throw new ValidationError('reason is required (3-500 chars)');
     }
     validatePatch(patch);
@@ -124,6 +127,11 @@ class DatasetStore {
     const latest = [...this.history].reverse().find((r) => r.dataset === rec.dataset && !r.revertedAt);
     if (latest.id !== rec.id) {
       throw new ValidationError(`Revert newer override ${latest.id} first`);
+    }
+    // The endpoint being restored may since have been claimed by another dataset.
+    const clash = DATASET_IDS.find((o) => o !== rec.dataset && this.data[o].endpoint === rec.before.endpoint);
+    if (clash) {
+      throw new ValidationError(`Cannot revert: endpoint ${rec.before.endpoint} is now used by dataset ${clash}`);
     }
     this.data[rec.dataset] = clone(rec.before);
     rec.revertedAt = new Date().toISOString();

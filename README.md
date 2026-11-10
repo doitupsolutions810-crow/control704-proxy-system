@@ -76,7 +76,9 @@ To use a different identity provider, pass any `{ name, verify(token) }` object 
 | `POST /admin/overrides/{overrideId}/revert` | `datasets:revert` |
 | `GET /admin/audit` | `audit:read` |
 
-Errors: `401` (missing/invalid/expired token, with `WWW-Authenticate`), `403` (`insufficient_scope`, lists required scopes), `400` (validation), `404`, `503` (route disabled).
+Errors: `401` (missing/invalid/expired token or duplicate `Authorization` headers, with `WWW-Authenticate`), `403` (`insufficient_scope`, lists required scopes), `400` (validation / malformed JSON / non-object body / malformed request target), `404`, `405` (with `Allow`; includes `HEAD`/`OPTIONS`), `413` (body > 16 KiB), `415` (non-JSON content-type), `503` (route disabled).
+
+Token rules enforced: `alg` must exactly match the configured key type (`none`, case variants and HS/RS swaps rejected); `crit` headers rejected; `kid`/`jku`/`x5u`/`jwk` ignored (never used to pick keys); segments must be canonical base64url without padding; token ≤ 8 KiB; `exp` required and numeric; `nbf`/`iat` must be numeric if present and `iat` may not be in the future (beyond skew); `sub` 1–256 chars without control characters; RSA keys ≥ 2048 bits; EC keys must be P-256. Tokens are only accepted from the `Authorization` header (never query strings).
 
 ### Usage
 ```bash
@@ -95,8 +97,19 @@ curl -X POST -H "Authorization: Bearer $ADMIN_TOKEN" localhost:8704/admin/overri
 
 ## Tests
 ```bash
-npm test
+npm test                      # full suite (unit, HTTP, edge cases, seeded fuzz)
+npm run test:fuzz             # longer fuzz run
+FUZZ_SEED=123 FUZZ_ITER=5000 node --test test/fuzz.test.js   # reproduce a specific seed
 ```
+
+| File | Covers |
+|---|---|
+| `test/auth.test.js`, `test/server.test.js` | Core happy paths and basic rejections |
+| `test/jwt.edge.test.js` | Alg confusion, header tampering, odd/duplicate JSON keys, encoding, size limits, time-claim boundaries, aud/iss/sub types, config validation |
+| `test/access.edge.test.js` | Role/scope matrix, unknown & prototype roles, scope escalation, case sensitivity, Bearer parsing, duplicate auth headers, audit redaction on every failure path |
+| `test/overrides.edge.test.js` | Every validation boundary, endpoint traversal/lookalikes/collisions, upstream schemes & credentials, prototype pollution, revert ordering & collisions, concurrency, 503 |
+| `test/http.edge.test.js` | Malformed JSON, content types, body limits (incl. chunked & lying Content-Length), unknown routes/methods, HEAD/OPTIONS, query strings, URL quirks |
+| `test/fuzz.test.js` | Seeded randomized tests (Node built-ins only; default seed `704012`) |
 
 ## Limitations / next steps
 - Overrides and audit entries are in memory (lost on restart); swap in persistent storage for production.
