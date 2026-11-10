@@ -286,9 +286,10 @@ test('config from env: PEM with escaped \\n works', async () => {
   assert.ok(await p.verify(signRS(claims())));
 });
 test('config: secret of exactly 32 bytes accepted, 31 rejected (multi-byte counted as bytes)', () => {
-  assert.ok(createAvroneProvider({ ...config, secret: 'a'.repeat(32) }));
-  assert.throws(() => createAvroneProvider({ ...config, secret: 'a'.repeat(31) }), /32/);
-  assert.ok(createAvroneProvider({ ...config, secret: 'é'.repeat(16) }));
+  const varied = 'abcdefgh'.repeat(4);
+  assert.ok(createAvroneProvider({ ...config, secret: varied }));
+  assert.throws(() => createAvroneProvider({ ...config, secret: varied.slice(0, 31) }), /32/);
+  assert.ok(createAvroneProvider({ ...config, secret: 'éàüöçñßø'.repeat(2) })); // 16 chars, 32 bytes
 });
 test('config: weak RSA (1024) and unsupported key types rejected', () => {
   const weak = crypto.generateKeyPairSync('rsa', { modulusLength: 1024 }).publicKey.export({ type: 'spki', format: 'pem' });

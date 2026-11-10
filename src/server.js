@@ -10,6 +10,21 @@ const { createAuditLogger } = require('./access/audit');
 const { DatasetStore, ValidationError, NotFoundError } = require('./datasets/store');
 
 const MAX_BODY = 16 * 1024;
+// Bodies beyond MAX_BODY are drained (so a clean 413 can be sent) only up to MAX_DRAIN;
+// past that the connection is closed to stop endless streams.
+const MAX_DRAIN = 1024 * 1024;
+const MAX_HEADERS = 100;
+const LINGER_MS = 2000;
+
+const SERVER_DEFAULTS = Object.freeze({
+  requestTimeout: 15000, // whole request incl. body (slowloris bodies)
+  headersTimeout: 10000, // slow headers
+  keepAliveTimeout: 5000,
+  maxHeaderSize: 16384, // bytes; Node returns 431 beyond this
+  maxConnections: 1024,
+  connectionsCheckingInterval: 1000,
+});
+const utf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: false });
 
 class HttpError extends Error {
   constructor(status, error, message) { super(message); this.status = status; this.error = error; }
@@ -44,16 +59,30 @@ function readJson(req) {
     let tooBig = false;
     const chunks = [];
     // Drain (rather than destroy) oversized bodies so a clean 413 can still be sent.
+    let settled = false;
     req.on('data', (c) => {
-      if (tooBig) return;
       size += c.length;
+      if (size > MAX_DRAIN && !settled) {
+        settled = true;
+        const e = new HttpError(413, 'payload_too_large', 'Request body too large');
+        e.closeConnection = true;
+        reject(e);
+        return;
+      }
+      if (tooBig) return;
       if (size > MAX_BODY) { tooBig = true; chunks.length = 0; return; }
       chunks.push(c);
     });
     req.on('end', () => {
+      if (settled) return;
       if (tooBig) { reject(new HttpError(413, 'payload_too_large', 'Request body too large')); return; }
       let parsed;
-      try { parsed = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); }
+      let text;
+      // Strict UTF-8: invalid / overlong sequences are rejected instead of being silently
+      // replaced with U+FFFD and stored.
+      try { text = utf8.decode(Buffer.concat(chunks)); }
+      catch { reject(new ValidationError('Request body is not valid UTF-8')); return; }
+      try { parsed = JSON.parse(text || '{}'); }
       catch { reject(new ValidationError('Invalid JSON body')); return; }
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
         reject(new ValidationError('JSON body must be an object'));
@@ -97,6 +126,11 @@ function createApp({ provider, store = new DatasetStore(), audit = createAuditLo
 
   async function handle(req, res) {
     const requestId = crypto.randomUUID();
+    // Node silently truncates headers beyond maxHeadersCount, which could hide e.g. a
+    // duplicate Authorization header. Reject instead of guessing.
+    if (Array.isArray(req.rawHeaders) && req.rawHeaders.length / 2 >= MAX_HEADERS) {
+      return send(res, 431, { error: 'too_many_headers' }, { connection: 'close' });
+    }
     let url;
     try {
       // Fixed base; only the path is used. Malformed request targets get 400 instead of
@@ -139,7 +173,23 @@ function createApp({ provider, store = new DatasetStore(), audit = createAuditLo
       if (principal) audit.log({ ...base, type: 'request', actor: principal.sub, status });
       return send(res, status, body);
     } catch (err) {
-      if (err instanceof HttpError) return send(res, err.status, { error: err.error, message: err.message });
+      if (err instanceof HttpError) {
+        if (err.closeConnection) {
+          // "Lingering close": after the 413 is flushed, send FIN but keep discarding incoming
+          // bytes for a short grace period. Destroying immediately while the peer is still
+          // uploading triggers a TCP RST that can wipe the response before the client reads it.
+          res.on('finish', () => {
+            const sock = req.socket;
+            if (!sock) return;
+            req.on('data', () => {});
+            req.resume();
+            sock.end();
+            setTimeout(() => sock.destroy(), LINGER_MS).unref();
+          });
+          return send(res, err.status, { error: err.error, message: err.message }, { connection: 'close' });
+        }
+        return send(res, err.status, { error: err.error, message: err.message });
+      }
       if (err instanceof ValidationError) return send(res, 400, { error: 'validation_error', message: err.message, details: err.details || [] });
       if (err instanceof NotFoundError) return send(res, 404, { error: 'not_found', message: err.message });
       audit.log({ ...base, type: 'error', actor: principal && principal.sub, message: err.message });
@@ -147,7 +197,22 @@ function createApp({ provider, store = new DatasetStore(), audit = createAuditLo
     }
   }
 
-  return { handle, store, audit, server: () => http.createServer(handle) };
+  function server(options = {}) {
+    const o = { ...SERVER_DEFAULTS, ...options };
+    const srv = http.createServer({
+      requestTimeout: o.requestTimeout,
+      headersTimeout: o.headersTimeout,
+      keepAliveTimeout: o.keepAliveTimeout,
+      maxHeaderSize: o.maxHeaderSize,
+      connectionsCheckingInterval: o.connectionsCheckingInterval,
+    }, handle);
+    srv.maxConnections = o.maxConnections;
+    // One above the cap so the handler can detect (and reject) truncation.
+    srv.maxHeadersCount = MAX_HEADERS + 1;
+    return srv;
+  }
+
+  return { handle, store, audit, server };
 }
 
-module.exports = { createApp };
+module.exports = { createApp, SERVER_DEFAULTS, MAX_BODY, MAX_DRAIN, MAX_HEADERS };

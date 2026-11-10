@@ -53,11 +53,11 @@ async function startServer(opts = {}) {
   const { createAuditLogger } = require('../src/access/audit');
   const lines = [];
   const audit = createAuditLogger({ sink: (l) => lines.push(l), maxEntries: 100000 });
-  const app = createApp({ provider: opts.provider || createAvroneProvider(config), audit, ...opts.app });
-  const server = app.server();
+  const app = createApp({ provider: opts.provider || createAvroneProvider(config), audit: opts.audit || audit, ...opts.app });
+  const server = app.server(opts.serverOptions);
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const port = server.address().port;
-  return { app, server, port, base: `http://127.0.0.1:${port}`, lines, close: () => new Promise((r) => server.close(r)) };
+  return { app, server, port, base: `http://127.0.0.1:${port}`, lines, close: () => new Promise((r) => { server.close(r); if (server.closeAllConnections) server.closeAllConnections(); }) };
 }
 
 // Raw HTTP request (supports duplicate headers, odd methods, raw paths, raw bodies).
@@ -86,4 +86,10 @@ const jsonPost = (t, body) => ({
   body: typeof body === 'string' ? body : JSON.stringify(body),
 });
 
-module.exports = { SECRET, ISSUER, AUDIENCE, sign, signRaw, claims, config, b64, hmac, rng, SEED, startServer, raw, bearer, jsonPost };
+// Controllable fake clock (milliseconds) for providers: createAvroneProvider({ ...config, now: clock.now }).
+function fakeClock(startMs = Date.now()) {
+  let t = startMs;
+  return { now: () => t, set: (ms) => { t = ms; }, advance: (ms) => { t += ms; }, sec: () => t / 1000 };
+}
+
+module.exports = { fakeClock, SECRET, ISSUER, AUDIENCE, sign, signRaw, claims, config, b64, hmac, rng, SEED, startServer, raw, bearer, jsonPost };

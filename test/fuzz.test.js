@@ -165,7 +165,8 @@ test(`fuzz [seed ${SEED}]: random patches — store invariants always hold`, () 
 
 test(`fuzz [seed ${SEED}]: random override/revert interleavings — revert always restores the exact prior state`, () => {
   const r = rng(SEED + 6);
-  const s = new DatasetStore();
+  // History large enough to never compact during this test (compaction is covered in model/resources tests).
+  const s = new DatasetStore(undefined, { maxHistory: ITER * 2 + 10 });
   const stack = { X: [], Y: [], Z: [] };
   for (let i = 0; i < ITER; i++) {
     const id = r.pick(['X', 'Y', 'Z']);

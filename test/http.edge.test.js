@@ -28,7 +28,7 @@ test('HTTP server edge cases', async (t) => {
     });
   }
   await t.test('empty body -> 400 (treated as {} -> missing patch)', async () => assert.equal((await post('')).status, 400));
-  await t.test('JSON with BOM -> 400 not 500', async () => assert.ok([400].includes((await post('\ufeff' + goodBody)).status)));
+  await t.test('JSON with UTF-8 BOM: BOM stripped by strict decoder (RFC 8259 allows ignoring it) -> 201, never 500', async () => assert.equal((await post(Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(goodBody)]))).status, 201));
   await t.test('invalid UTF-8 bytes -> 400 not 500', async () => assert.equal((await post(Buffer.from([0x7b, 0xff, 0xfe, 0x7d]))).status, 400));
   await t.test('valid body succeeds -> 201', async () => assert.equal((await post(goodBody)).status, 201));
 

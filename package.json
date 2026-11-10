@@ -6,7 +6,9 @@
   "scripts": {
     "start": "node src/proxy.js",
     "test": "node --test test/*.test.js",
-    "test:fuzz": "FUZZ_ITER=3000 node --test test/fuzz.test.js"
+    "test:fuzz": "FUZZ_ITER=3000 MODEL_STEPS=1500 node --test test/fuzz.test.js test/model.test.js",
+    "test:slow": "FUZZ_ITER=5000 node --test test/*.test.js test/slow/*.slow.test.js",
+    "test:mutation": "node scripts/mutation-check.js"
   },
   "keywords": [
     "proxy",

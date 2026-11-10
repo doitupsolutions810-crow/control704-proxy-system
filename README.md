@@ -37,8 +37,8 @@ The `auth` mode label is intentionally **not** overridable, so an override can n
 |---|---|---|
 | `AVRONE_ISSUER` | yes | Expected `iss` claim of Avrone Due'Krey tokens |
 | `AVRONE_AUDIENCE` | yes | Expected `aud` claim (e.g. `control704-proxy`) |
-| `AVRONE_JWT_SECRET` | one of | HS256 shared secret, ≥ 32 bytes |
-| `AVRONE_JWT_PUBLIC_KEY` | one of | PEM public key for RS256 (RSA) or ES256 (P-256); `\n` escapes allowed |
+| `AVRONE_JWT_SECRET` | one of | HS256 shared secret, ≥ 32 bytes, no leading/trailing whitespace, not low-variety |
+| `AVRONE_JWT_PUBLIC_KEY` | one of | PEM public key for RS256 (RSA ≥ 2048) or ES256 (P-256); `\n` escapes and CRLF allowed; private keys are rejected |
 | `AVRONE_CLOCK_SKEW_SEC` | no | Allowed clock skew, default `30` |
 | `AVRONE_MAX_TOKEN_AGE_SEC` | no | Reject tokens whose `iat` is older than this |
 | `HOST` / `PORT` | no | Default `127.0.0.1:8704` |
@@ -78,7 +78,7 @@ To use a different identity provider, pass any `{ name, verify(token) }` object 
 
 Errors: `401` (missing/invalid/expired token or duplicate `Authorization` headers, with `WWW-Authenticate`), `403` (`insufficient_scope`, lists required scopes), `400` (validation / malformed JSON / non-object body / malformed request target), `404`, `405` (with `Allow`; includes `HEAD`/`OPTIONS`), `413` (body > 16 KiB), `415` (non-JSON content-type), `503` (route disabled).
 
-Token rules enforced: `alg` must exactly match the configured key type (`none`, case variants and HS/RS swaps rejected); `crit` headers rejected; `kid`/`jku`/`x5u`/`jwk` ignored (never used to pick keys); segments must be canonical base64url without padding; token ≤ 8 KiB; `exp` required and numeric; `nbf`/`iat` must be numeric if present and `iat` may not be in the future (beyond skew); `sub` 1–256 chars without control characters; RSA keys ≥ 2048 bits; EC keys must be P-256. Tokens are only accepted from the `Authorization` header (never query strings).
+Token rules enforced: `alg` must exactly match the configured key type (`none`, case variants and HS/RS swaps rejected); `crit` headers rejected; `kid`/`jku`/`x5u`/`jwk` ignored (never used to pick keys); segments must be canonical base64url without padding; token ≤ 8 KiB; `exp` required and numeric; `nbf`/`iat` must be numeric if present and `iat` may not be in the future (beyond skew); `sub` 1–256 chars without control, zero-width, bidi or other format characters or lone surrogates; token JSON must be strict UTF-8; RSA keys ≥ 2048 bits; EC keys must be P-256. Tokens are only accepted from the `Authorization` header (never query strings).
 
 ### Usage
 ```bash
@@ -97,21 +97,48 @@ curl -X POST -H "Authorization: Bearer $ADMIN_TOKEN" localhost:8704/admin/overri
 
 ## Tests
 ```bash
-npm test                      # full suite (unit, HTTP, edge cases, seeded fuzz)
-npm run test:fuzz             # longer fuzz run
-FUZZ_SEED=123 FUZZ_ITER=5000 node --test test/fuzz.test.js   # reproduce a specific seed
+npm test               # fast suite (~4-5 s): unit, HTTP, edge cases, seeded fuzz, model-based, regressions
+npm run test:slow      # + statistical timing check and long model sweep (minutes)
+npm run test:fuzz      # longer fuzz + model runs
+npm run test:mutation  # mutation check: breaks each guard in a throwaway copy and confirms tests fail
+FUZZ_SEED=123 FUZZ_ITER=5000 node --test test/fuzz.test.js        # reproduce a fuzz seed
+MODEL_SEEDS=42 MODEL_STEPS=2000 node --test test/model.test.js     # reproduce a model seed
 ```
 
 | File | Covers |
 |---|---|
-| `test/auth.test.js`, `test/server.test.js` | Core happy paths and basic rejections |
-| `test/jwt.edge.test.js` | Alg confusion, header tampering, odd/duplicate JSON keys, encoding, size limits, time-claim boundaries, aud/iss/sub types, config validation |
-| `test/access.edge.test.js` | Role/scope matrix, unknown & prototype roles, scope escalation, case sensitivity, Bearer parsing, duplicate auth headers, audit redaction on every failure path |
-| `test/overrides.edge.test.js` | Every validation boundary, endpoint traversal/lookalikes/collisions, upstream schemes & credentials, prototype pollution, revert ordering & collisions, concurrency, 503 |
-| `test/http.edge.test.js` | Malformed JSON, content types, body limits (incl. chunked & lying Content-Length), unknown routes/methods, HEAD/OPTIONS, query strings, URL quirks |
-| `test/fuzz.test.js` | Seeded randomized tests (Node built-ins only; default seed `704012`) |
+| `auth`, `server` | Core happy paths and basic rejections |
+| `jwt.edge` | Alg confusion, header tampering, odd/duplicate JSON keys, encoding, size limits, time-claim boundaries, aud/iss/sub types, config |
+| `access.edge` | Role/scope matrix, unknown & prototype roles, escalation, case sensitivity, Bearer parsing, duplicate auth headers, audit redaction |
+| `overrides.edge` | Validation boundaries, endpoint traversal/lookalikes/collisions, upstream schemes & credentials, prototype pollution, revert ordering, concurrency, 503 |
+| `http.edge` | Malformed JSON, content types, body limits, unknown routes/methods, HEAD/OPTIONS, query strings, URL quirks |
+| `fuzz` | Seeded randomized tests (default seed `704012`) |
+| `model` (+ `model/harness.js`) | Stateful model-based testing: random auth/override/revert/read sequences vs an independent reference model after every step, with delta-debugging shrinking to a minimal repro (shrinker itself verified with injected bugs) |
+| `time` | Fake clock: ms-precision exp/nbf/iat/max-age boundaries for several skews, clock jumps both ways, leap-second-like edges, broken clocks, token expiring mid-request |
+| `sidechannel` | `timingSafeEqual` used (spy), no `Buffer#equals`, signature checked before claims, uniform 401 shapes/lengths, no message leaks, 500s expose only a requestId |
+| `resources` | 300 concurrent requests, connection cap, slowloris headers/body (408), 431 for huge/many headers, endless bodies, audit & history growth bounds |
+| `keys` | Malformed PEMs, unsupported key types/curves/sizes, wrong key for alg, PEM CRLF/whitespace, runtime env/config swaps, key rotation, empty/whitespace secrets |
+| `unicode` | NFC/NFD, exhaustive `toUpperCase` scan for dataset ids, lookalike roles/scopes, bidi/zero-width chars, surrogates, overlong UTF-8, mixed-case percent-encoding |
+| `ratelimit` | `rateLimitPerMinute` boundaries and per-route config (config only: **not enforced**) |
+| `characterization` | Documents current behaviour for the open questions (scope-only admin actions, internal upstreams). **Not** an endorsement |
+| `regressions` | One explicit test per previously fixed bug (R2-1..R2-8, R3-1..R3-12) |
+| `slow/` | Statistical HMAC timing check, long model sweep |
+
+### Resource limits (defaults, `createApp().server(options)` to override)
+| Limit | Default |
+|---|---|
+| Request body | 16 KiB (413); bodies are drained up to 1 MiB, then the connection is closed (lingering close) |
+| Header size / count | 16 KiB (431) / 100 headers (431) |
+| `requestTimeout` / `headersTimeout` / `keepAliveTimeout` | 15 s / 10 s / 5 s (408 on slow requests) |
+| `maxConnections` | 1024 |
+| Token size | 8 KiB |
+| Audit ring buffer | 1000 entries in memory (`createAuditLogger({ maxEntries })`); the sink gets every event |
+| Override history | 1000 records (`new DatasetStore(undefined, { maxHistory })`); older records are compacted and can no longer be reverted |
 
 ## Limitations / next steps
 - Overrides and audit entries are in memory (lost on restart); swap in persistent storage for production.
+- `rateLimitPerMinute` is stored and validated but **not enforced** yet.
+- Auth is evaluated once at request start; a token that expires during a slow upload still completes that request (bounded by `requestTimeout`).
+- `sub` values are compared exactly (no Unicode normalisation), per RFC 7519.
 - JWKS URL fetching/rotation is not implemented; a single configured key is used.
 - The proxy returns route profiles; actual upstream request forwarding is not implemented yet.

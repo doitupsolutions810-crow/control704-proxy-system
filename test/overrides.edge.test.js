@@ -134,9 +134,10 @@ test('reason boundaries: 3 and 500 chars accepted, trimmed', () => {
   assert.ok(new DatasetStore().override('X', { enabled: false }, { actor: 'a', reason: 'x'.repeat(500) }));
   assert.ok(new DatasetStore().override('X', { enabled: false }, { actor: 'a', reason: ` ${'x'.repeat(500)} ` }));
 });
-test('reason with unicode / control chars stored verbatim (JSON-escaped in logs)', () => {
-  const r = new DatasetStore().override('X', { enabled: false }, { actor: 'a', reason: 'maintenance 🚧 \u0007 done' });
+test('reason with unicode stored verbatim; control chars rejected (round 3 hardening)', () => {
+  const r = new DatasetStore().override('X', { enabled: false }, { actor: 'a', reason: 'maintenance 🚧 done 👩‍💻' });
   assert.match(r.reason, /🚧/);
+  assert.throws(() => new DatasetStore().override('X', { enabled: false }, { actor: 'a', reason: 'maintenance \u0007 done' }), /control or bidi/);
 });
 test('actor required for override and revert', () => {
   const s = new DatasetStore();
@@ -334,4 +335,15 @@ test('HTTP override flows', async (t) => {
     assert.equal(line.reason, 'audit check');
     assert.ok(!JSON.stringify(line).includes(admin.split('.')[2]));
   });
+});
+
+// ---------- round 3: non-finite numbers via the direct (non-JSON) API ----------
+for (const n of [Infinity, -Infinity, NaN]) {
+  test(`metadata number ${n} rejected via direct store API (would silently become null in history)`, () => {
+    assert.throws(() => new DatasetStore().override('X', { metadata: { n } }, ctx), (e) => /metadata/.test((e.details || []).join(' ')));
+  });
+}
+test('metadata: max-magnitude finite numbers and -0 accepted', () => {
+  const r = new DatasetStore().override('X', { metadata: { a: Number.MAX_VALUE, b: -Number.MAX_VALUE, c: Number.MIN_VALUE, d: -0 } }, ctx);
+  assert.equal(r.after.metadata.a, Number.MAX_VALUE);
 });

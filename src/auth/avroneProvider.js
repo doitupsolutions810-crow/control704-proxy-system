@@ -24,9 +24,13 @@ function b64urlDecode(str) {
   return buf;
 }
 
+const strictUtf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
+
 function parseJson(buf) {
   try {
-    const v = JSON.parse(buf.toString('utf8'));
+    // Strict UTF-8 (rejects overlong / invalid sequences rather than mapping to U+FFFD).
+    const v = JSON.parse(strictUtf8.decode(buf));
     if (!v || typeof v !== 'object' || Array.isArray(v)) throw new Error('not object');
     return v;
   } catch {
@@ -59,9 +63,22 @@ function validateConfig(cfg) {
   if (!cfg.secret && !cfg.publicKey) {
     throw new Error('Set AVRONE_JWT_SECRET (HS256) or AVRONE_JWT_PUBLIC_KEY (RS256/ES256)');
   }
+  if (cfg.secret !== undefined && cfg.secret !== null && typeof cfg.secret !== 'string') {
+    throw new Error('AVRONE_JWT_SECRET must be a string');
+  }
+  if (cfg.publicKey !== undefined && cfg.publicKey !== null && typeof cfg.publicKey !== 'string') {
+    throw new Error('AVRONE_JWT_PUBLIC_KEY must be a PEM string');
+  }
   if (cfg.secret && Buffer.byteLength(cfg.secret) < 32) {
     throw new Error('AVRONE_JWT_SECRET must be at least 32 bytes');
   }
+  if (cfg.secret && (cfg.secret.trim().length === 0 || cfg.secret !== cfg.secret.trim())) {
+    throw new Error('AVRONE_JWT_SECRET must not be blank or have leading/trailing whitespace');
+  }
+  if (cfg.secret && new Set(cfg.secret).size < 8) {
+    throw new Error('AVRONE_JWT_SECRET has too little variety (use a random value, e.g. openssl rand -hex 32)');
+  }
+  if (cfg.now !== undefined && typeof cfg.now !== 'function') throw new Error('config.now must be a function');
   if (!Number.isInteger(cfg.clockSkewSec) || cfg.clockSkewSec < 0 || cfg.clockSkewSec > 300) {
     throw new Error('AVRONE_CLOCK_SKEW_SEC must be an integer between 0 and 300');
   }
@@ -73,13 +90,34 @@ function validateConfig(cfg) {
 
 const isNumericDate = (v) => typeof v === 'number' && Number.isFinite(v);
 
-function createAvroneProvider(config = loadConfigFromEnv()) {
-  validateConfig(config);
+// Unicode "format" characters (zero-width, bidi overrides, BOM, ...) and line/paragraph
+// separators. Rejected in identifiers so audit logs cannot be visually spoofed.
+const INVISIBLE_OR_CONTROL = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\p{Cf}]/u;
+
+function loadPublicKey(pem) {
+  if (/PRIVATE KEY-----/.test(pem)) {
+    throw new Error('AVRONE_JWT_PUBLIC_KEY contains a PRIVATE key; configure the public key only');
+  }
+  // Normalise CRLF line endings and surrounding whitespace (common from Windows editors and
+  // secret managers) before parsing.
+  const normalised = pem.replace(/\r\n?/g, '\n').trim() + '\n';
+  try {
+    return crypto.createPublicKey(normalised);
+  } catch {
+    throw new Error('AVRONE_JWT_PUBLIC_KEY is not a valid PEM/SPKI public key');
+  }
+}
+
+function createAvroneProvider(inputConfig = loadConfigFromEnv()) {
+  validateConfig(inputConfig);
+  // Snapshot the config: later mutation of the caller's object (or process.env) must not
+  // change which keys/issuer/audience are trusted. (Previously the secret was read live.)
+  const config = Object.freeze({ ...inputConfig, now: inputConfig.now || Date.now });
   const allowedAlgs = new Set();
   let keyObject = null;
   if (config.secret) allowedAlgs.add('HS256');
   if (config.publicKey) {
-    keyObject = crypto.createPublicKey(config.publicKey);
+    keyObject = loadPublicKey(config.publicKey);
     const t = keyObject.asymmetricKeyType;
     if (t === 'rsa') {
       if (keyObject.asymmetricKeyDetails.modulusLength < 2048) throw new Error('RSA key must be >= 2048 bits');
@@ -128,7 +166,10 @@ function createAvroneProvider(config = loadConfigFromEnv()) {
         throw new AuthError('Invalid signature');
       }
 
-      const now = Math.floor(Date.now() / 1000);
+      // Full (fractional) precision: flooring let fractional `exp` values pass for up to 1s.
+      const nowMs = config.now();
+      if (!Number.isFinite(nowMs)) throw new AuthError('Clock unavailable');
+      const now = nowMs / 1000;
       const skew = config.clockSkewSec;
       if (!isNumericDate(payload.exp)) throw new AuthError('Token missing exp');
       if (now - skew >= payload.exp) throw new AuthError('Token expired', 'token_expired');
@@ -148,7 +189,7 @@ function createAvroneProvider(config = loadConfigFromEnv()) {
       const aud = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
       if (!aud.some((a) => typeof a === 'string' && a === config.audience)) throw new AuthError('Invalid audience');
       if (typeof payload.sub !== 'string' || !payload.sub || payload.sub.length > 256
-        || /[\u0000-\u001f\u007f]/.test(payload.sub)) throw new AuthError('Invalid sub');
+        || INVISIBLE_OR_CONTROL.test(payload.sub) || LONE_SURROGATE.test(payload.sub)) throw new AuthError('Invalid sub');
 
       return payload;
     },

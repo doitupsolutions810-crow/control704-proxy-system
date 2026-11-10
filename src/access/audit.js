@@ -2,6 +2,7 @@
 // Structured (JSON lines) audit logger. Never logs tokens or Authorization headers.
 
 function createAuditLogger({ sink, maxEntries = 1000 } = {}) {
+  if (!Number.isInteger(maxEntries) || maxEntries < 1) throw new Error('maxEntries must be a positive integer');
   const entries = [];
   const write = sink || ((line) => process.stdout.write(line + '\n'));
   return {

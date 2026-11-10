@@ -15,6 +15,13 @@ const DEFAULTS = Object.freeze({
 // Only these fields may be overridden. `auth` is deliberately immutable via override
 // so an override can never change how a route authenticates.
 const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+// Bidi controls / invisible format chars / C0-C1 controls: rejected in free text that ends up
+// in the audit trail, to prevent "Trojan Source"-style spoofing. (ZWJ U+200D is allowed so
+// emoji sequences in reasons still work.)
+const SPOOF_CHARS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u061c\u200b\u200c\u200e\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff\ufff9-\ufffb\ufffd]/u;
+const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
+const isCleanText = (s) => !SPOOF_CHARS.test(s) && !LONE_SURROGATE.test(s);
+const DEFAULT_MAX_HISTORY = 1000;
 
 const VALIDATORS = {
   endpoint: (v) => typeof v === 'string' && /^\/proxy\/[a-z0-9][a-z0-9/_-]{0,63}$/.test(v)
@@ -32,7 +39,8 @@ const VALIDATORS = {
   metadata: (v) => v !== null && typeof v === 'object' && !Array.isArray(v)
     && Object.keys(v).length <= 50
     && Object.entries(v).every(([k, val]) => /^[A-Za-z0-9_.-]{1,64}$/.test(k) && !FORBIDDEN_KEYS.has(k)
-      && (typeof val === 'string' ? val.length <= 512 : (typeof val === 'number' || typeof val === 'boolean'))),
+      && (typeof val === 'string' ? val.length <= 512 && isCleanText(val)
+        : ((typeof val === 'number' && Number.isFinite(val)) || typeof val === 'boolean'))),
 };
 
 class ValidationError extends Error {
@@ -73,9 +81,23 @@ function validatePatch(patch) {
 }
 
 class DatasetStore {
-  constructor(initial = DEFAULTS) {
+  constructor(initial = DEFAULTS, { maxHistory = DEFAULT_MAX_HISTORY } = {}) {
+    if (!Number.isInteger(maxHistory) || maxHistory < 1) throw new Error('maxHistory must be a positive integer');
     this.data = clone(initial);
-    this.history = []; // override records
+    this.history = []; // override records (bounded; see _compact)
+    this.maxHistory = maxHistory;
+    this.compacted = 0;
+  }
+
+  // Bounded history: once more than maxHistory records exist, the oldest are dropped.
+  // Dropping an old record only means it can no longer be reverted (revert is LIFO, so
+  // newer overrides remain fully revertible); current dataset state is unaffected.
+  _compact() {
+    const excess = this.history.length - this.maxHistory;
+    if (excess > 0) {
+      this.history.splice(0, excess);
+      this.compacted += excess;
+    }
   }
 
   get(id) { return clone(this.data[normalizeId(id)]); }
@@ -88,6 +110,7 @@ class DatasetStore {
     if (typeof reason !== 'string' || reason.trim().length < 3 || reason.trim().length > 500) {
       throw new ValidationError('reason is required (3-500 chars)');
     }
+    if (!isCleanText(reason)) throw new ValidationError('reason contains control or bidi characters');
     validatePatch(patch);
     if (patch.endpoint) {
       const clash = DATASET_IDS.find((o) => o !== ds && this.data[o].endpoint === patch.endpoint);
@@ -109,6 +132,7 @@ class DatasetStore {
       revertedBy: null,
     };
     this.history.push(record);
+    this._compact();
     return clone(record);
   }
 
