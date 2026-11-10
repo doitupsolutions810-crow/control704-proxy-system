@@ -343,7 +343,10 @@ for (const n of [Infinity, -Infinity, NaN]) {
     assert.throws(() => new DatasetStore().override('X', { metadata: { n } }, ctx), (e) => /metadata/.test((e.details || []).join(' ')));
   });
 }
-test('metadata: max-magnitude finite numbers and -0 accepted', () => {
-  const r = new DatasetStore().override('X', { metadata: { a: Number.MAX_VALUE, b: -Number.MAX_VALUE, c: Number.MIN_VALUE, d: -0 } }, ctx);
-  assert.equal(r.after.metadata.a, Number.MAX_VALUE);
+test('metadata: safe-integer extremes, tiny floats and -0 accepted; unsafe integers (incl. MAX_VALUE) rejected (round 4)', () => {
+  const r = new DatasetStore().override('X', { metadata: { a: Number.MAX_SAFE_INTEGER, b: Number.MIN_SAFE_INTEGER, c: Number.MIN_VALUE, d: -0, e: 123.456 } }, ctx);
+  assert.equal(r.after.metadata.a, Number.MAX_SAFE_INTEGER);
+  for (const n of [Number.MAX_VALUE, -Number.MAX_VALUE, 2 ** 53, 1e21, 1.5e300]) {
+    assert.throws(() => new DatasetStore().override('X', { metadata: { n } }, ctx), (e) => /metadata/.test((e.details || []).join(' ')), String(n));
+  }
 });

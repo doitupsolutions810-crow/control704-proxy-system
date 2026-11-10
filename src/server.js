@@ -41,7 +41,7 @@ function send(res, status, body, extraHeaders = {}) {
   res.end(payload);
 }
 
-function readJson(req) {
+function readJson(req, res) {
   return new Promise((resolve, reject) => {
     const ct = req.headers['content-type'] || '';
     if (!/^application\/json\s*(;.*)?$/i.test(ct)) {
@@ -55,6 +55,9 @@ function readJson(req) {
       reject(new HttpError(413, 'payload_too_large', 'Request body too large'));
       return;
     }
+    // Expect: 100-continue — only invite the body once auth, authz, content-type and the
+    // declared length have all passed (Node's default would send 100 before any checks).
+    if (req.expectsContinue && res && !res.headersSent) res.writeContinue();
     let size = 0;
     let tooBig = false;
     const chunks = [];
@@ -108,7 +111,7 @@ function createApp({ provider, store = new DatasetStore(), audit = createAuditLo
     ['GET', /^\/datasets$/, () => ['datasets:read'], () => [200, store.all()]],
     ['GET', /^\/datasets\/([^/]+)$/, () => ['datasets:read'], (ctx) => [200, store.get(ctx.params[0])]],
     ['POST', /^\/admin\/datasets\/([^/]+)\/overrides$/, () => ['datasets:override'], async (ctx) => {
-      const body = await readJson(ctx.req);
+      const body = await readJson(ctx.req, ctx.res);
       const rec = store.override(ctx.params[0], body.patch, { actor: ctx.principal.sub, reason: body.reason });
       audit.log({ type: 'dataset.override', requestId: ctx.requestId, actor: ctx.principal.sub,
         dataset: rec.dataset, overrideId: rec.id, patch: rec.patch, reason: rec.reason });
@@ -126,6 +129,19 @@ function createApp({ provider, store = new DatasetStore(), audit = createAuditLo
 
   async function handle(req, res) {
     const requestId = crypto.randomUUID();
+    // Server-generated correlation id. Any caller-supplied X-Request-Id is ignored (never
+    // echoed), so it cannot be used for header injection or audit-log confusion.
+    if (typeof res.setHeader === 'function') res.setHeader('x-request-id', requestId);
+    // RFC 9112 §3.2: more than one Host header MUST be rejected with 400 (an upstream proxy
+    // might route on a different Host than the one Node keeps).
+    if (Array.isArray(req.rawHeaders)) {
+      let hosts = 0;
+      for (let i = 0; i < req.rawHeaders.length; i += 2) if (String(req.rawHeaders[i]).toLowerCase() === 'host') hosts += 1;
+      if (hosts > 1) return send(res, 400, { error: 'bad_request', message: 'Multiple Host headers' }, { connection: 'close' });
+    }
+    if (req.httpVersionMajor !== undefined && req.httpVersionMajor !== 1) {
+      return send(res, 505, { error: 'http_version_not_supported' }, { connection: 'close' });
+    }
     // Node silently truncates headers beyond maxHeadersCount, which could hide e.g. a
     // duplicate Authorization header. Reject instead of guessing.
     if (Array.isArray(req.rawHeaders) && req.rawHeaders.length / 2 >= MAX_HEADERS) {
@@ -169,7 +185,7 @@ function createApp({ provider, store = new DatasetStore(), audit = createAuditLo
         }
       }
 
-      const [status, body] = await handler({ req, params, principal, requestId });
+      const [status, body] = await handler({ req, res, params, principal, requestId });
       if (principal) audit.log({ ...base, type: 'request', actor: principal.sub, status });
       return send(res, status, body);
     } catch (err) {
@@ -206,6 +222,7 @@ function createApp({ provider, store = new DatasetStore(), audit = createAuditLo
       maxHeaderSize: o.maxHeaderSize,
       connectionsCheckingInterval: o.connectionsCheckingInterval,
     }, handle);
+    srv.on('checkContinue', (req, res) => { req.expectsContinue = true; handle(req, res); });
     srv.maxConnections = o.maxConnections;
     // One above the cap so the handler can detect (and reject) truncation.
     srv.maxHeadersCount = MAX_HEADERS + 1;

@@ -1,13 +1,13 @@
 {
   "name": "control704-proxy-system",
   "version": "1.0.0",
-  "description": "Control704 IT Technician authentication and access proxy via Avrone Due’Krey and Control12-lattice-op. Proxy X, Y, Z data set code override functionality.",
+  "description": "Control704 IT Technician authentication and access proxy via Avrone Due\u2019Krey and Control12-lattice-op. Proxy X, Y, Z data set code override functionality.",
   "main": "src/proxy.js",
   "scripts": {
     "start": "node src/proxy.js",
     "test": "node --test test/*.test.js",
     "test:fuzz": "FUZZ_ITER=3000 MODEL_STEPS=1500 node --test test/fuzz.test.js test/model.test.js",
-    "test:slow": "FUZZ_ITER=5000 node --test test/*.test.js test/slow/*.slow.test.js",
+    "test:slow": "FUZZ_ITER=5000 INV_SEEDS=704012,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19 node --test test/*.test.js test/slow/*.slow.test.js",
     "test:mutation": "node scripts/mutation-check.js"
   },
   "keywords": [

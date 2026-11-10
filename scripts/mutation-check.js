@@ -38,7 +38,7 @@ function runTests(cwd) {
     child.on('close', (code) => {
       clearTimeout(timer);
       const failed = (out.match(/^ℹ fail (\d+)/m) || [])[1];
-      resolve({ code, failed: failed ? Number(failed) : null });
+      resolve({ code, failed: failed ? Number(failed) : null, out });
     });
   });
 }
@@ -60,7 +60,11 @@ async function runOne([id, file, search, replace, desc, meta = {}]) {
 
 (async () => {
   const base = await runTests(ROOT);
-  if (base.code !== 0) { console.error('Baseline test run is failing; fix tests first.'); process.exit(2); }
+  if (base.code !== 0) {
+    console.error('Baseline test run is failing; fix tests first.');
+    console.error(base.out.split('\n').filter((l) => /^✖|AssertionError|Error \[/.test(l)).slice(0, 30).join('\n'));
+    process.exit(2);
+  }
   const results = [];
   const queue = [...mutations];
   await Promise.all(Array.from({ length: JOBS }, async () => {

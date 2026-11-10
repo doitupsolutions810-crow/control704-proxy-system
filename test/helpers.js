@@ -92,4 +92,26 @@ function fakeClock(startMs = Date.now()) {
   return { now: () => t, set: (ms) => { t = ms; }, advance: (ms) => { t += ms; }, sec: () => t / 1000 };
 }
 
-module.exports = { fakeClock, SECRET, ISSUER, AUDIENCE, sign, signRaw, claims, config, b64, hmac, rng, SEED, startServer, raw, bearer, jsonPost };
+// Send raw bytes on a fresh socket; resolve with all received data once the peer closes
+// (or after waitMs). `statuses` lists every HTTP status line seen (pipelining / 100-continue).
+function rawSocket(port, payload, { waitMs = 1500, chunks } = {}) {
+  const net = require('net');
+  return new Promise((resolve) => {
+    const sock = net.connect(port, '127.0.0.1', async () => {
+      if (chunks) { for (const [delay, c] of chunks) { await new Promise((r) => setTimeout(r, delay)); if (!sock.destroyed) sock.write(c); } }
+      else if (payload !== undefined) sock.write(payload);
+    });
+    let data = ''; let done = false;
+    const finish = (why) => {
+      if (done) return; done = true; clearTimeout(timer); sock.destroy();
+      const statuses = [...data.matchAll(/HTTP\/1\.[01] (\d{3})/g)].map((m) => Number(m[1]));
+      resolve({ data, why, statuses, status: statuses[statuses.length - 1] || null });
+    };
+    sock.on('data', (d) => { data += d.toString('latin1'); });
+    sock.on('close', () => finish('close'));
+    sock.on('error', () => finish('error'));
+    const timer = setTimeout(() => finish('timeout'), waitMs);
+  });
+}
+
+module.exports = { rawSocket, fakeClock, SECRET, ISSUER, AUDIENCE, sign, signRaw, claims, config, b64, hmac, rng, SEED, startServer, raw, bearer, jsonPost };

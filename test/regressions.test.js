@@ -1,6 +1,6 @@
 'use strict';
-// Explicit regression locks: one test per bug fixed in rounds 2 and 3.
-// Round 2 bugs: R2-1..R2-8. Round 3 bugs: R3-1..R3-11.
+// Explicit regression locks: one test per bug fixed in rounds 2, 3 and 4.
+// Round 2: R2-1..R2-8. Round 3: R3-1..R3-12. Round 4: R4-1..R4-11.
 const test = require('node:test');
 const assert = require('node:assert');
 const crypto = require('crypto');
@@ -152,4 +152,98 @@ test('R3-12: >100 headers (where Node would silently truncate) -> 431, so a hidd
   const r = await raw(s.port, { path: '/admin/audit', headers });
   assert.equal(r.status, 431);
   assert.ok(AuthError);
+});
+
+// ---------------- Round 4 ----------------
+const { createAuditLogger } = require('../src/access/audit');
+const { rawSocket } = require('./helpers');
+const { startFromEnv } = require('../src/proxy');
+const { spawn } = require('child_process');
+
+test('R4-1: Expect: 100-continue must not send "100 Continue" before authentication', async (t) => {
+  const s = await startServer(); t.after(() => s.close());
+  const r = await rawSocket(s.port, 'POST /admin/datasets/X/overrides HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 50\r\nExpect: 100-continue\r\n\r\n', { waitMs: 400 });
+  assert.ok(!/HTTP\/1\.1 100/.test(r.data), r.data);
+  assert.match(r.data, /HTTP\/1\.1 401/);
+});
+
+test('R4-2: a throwing audit sink must not crash the request or leave it unanswered', async (t) => {
+  let errs = 0;
+  const audit = createAuditLogger({ sink: () => { throw new Error('disk full'); }, onSinkError: () => { errs++; } });
+  const s = await startServer({ audit }); t.after(() => s.close());
+  const r = await raw(s.port, { path: '/proxy/x', headers: bearer(sign(claims({ roles: ['technician'] }))) });
+  assert.equal(r.status, 200);
+  assert.ok(errs > 0); assert.ok(audit.stats().sinkErrors > 0);
+});
+
+test('R4-3: audit entries returned by recent() are immutable', () => {
+  const a = createAuditLogger({ sink: () => {} });
+  a.log({ type: 't', nested: { x: 1 } });
+  const [e] = a.recent();
+  assert.throws(() => { 'use strict'; e.type = 'forged'; }, TypeError);
+  assert.throws(() => { 'use strict'; e.nested.x = 2; }, TypeError);
+  assert.equal(a.recent()[0].type, 't');
+});
+
+test('R4-4: callers cannot forge audit ts/seq', () => {
+  const a = createAuditLogger({ sink: () => {} });
+  a.log({ type: 't', ts: '1970-01-01T00:00:00.000Z', seq: 999 });
+  const [e] = a.recent();
+  assert.notEqual(e.ts, '1970-01-01T00:00:00.000Z'); assert.equal(e.seq, 1);
+});
+
+test('R4-5: recent(0) and recent(-1) return nothing (previously the whole log / all-but-one)', () => {
+  const a = createAuditLogger({ sink: () => {} });
+  for (let i = 0; i < 5; i++) a.log({ type: `t${i}` });
+  assert.deepEqual(a.recent(0), []); assert.deepEqual(a.recent(-1), []);
+  assert.deepEqual(a.recent(2).map((e) => e.type), ['t3', 't4']);
+});
+
+test('R4-6: metadata integers beyond 2^53 are rejected (they silently lost precision)', () => {
+  const st = new DatasetStore();
+  assert.throws(() => st.override('X', { metadata: { n: 9007199254740993 } }, { actor: 'a', reason: 'precision' }), /Invalid patch/);
+  st.override('X', { metadata: { n: 9007199254740991, f: 1.5 } }, { actor: 'a', reason: 'precision ok' });
+});
+
+test('R4-7: HTTP/0.9-style and HTTP/2.0 request lines are not served as HTTP/1.1', async (t) => {
+  const s = await startServer(); t.after(() => s.close());
+  const r = await rawSocket(s.port, 'GET /health HTTP/2.0\r\nHost: x\r\n\r\n', { waitMs: 400 });
+  assert.ok(!/ 200 /.test(r.data.split('\r\n')[0] || ''), r.data);
+});
+
+test('R4-8: duplicate Host headers are rejected with 400 (RFC 9112 §3.2)', async (t) => {
+  const s = await startServer(); t.after(() => s.close());
+  const r = await rawSocket(s.port, 'GET /health HTTP/1.1\r\nHost: a\r\nHost: b\r\n\r\n', { waitMs: 400 });
+  assert.match(r.data, /^HTTP\/1\.1 400/);
+  for (const pair of ['Host: a\r\nhost: b', 'HOST: a\r\nHost: a', 'host: a\r\nhOsT: b']) {
+    const r2 = await rawSocket(s.port, `GET /health HTTP/1.1\r\n${pair}\r\n\r\n`, { waitMs: 400 });
+    assert.match(r2.data, /^HTTP\/1\.1 400/, `case-insensitive duplicate Host: ${JSON.stringify(pair)}`);
+  }
+});
+
+test('R4-9: CR/LF/TAB in metadata values and CR in reasons are rejected (log-line forging)', () => {
+  const st = new DatasetStore();
+  for (const v of ['a\r\nb', 'a\nfake audit line', 'a\tb', 'a\rb']) {
+    assert.throws(() => st.override('X', { metadata: { v } }, { actor: 'a', reason: 'ctl chars' }), /Invalid patch/, JSON.stringify(v));
+  }
+  assert.throws(() => st.override('X', { enabled: false }, { actor: 'a', reason: 'line1\r\nline2' }), /reason/);
+  st.override('X', { enabled: false }, { actor: 'a', reason: 'multi\nline\treason ok' });
+});
+
+test('R4-10: signal handlers are installed before the "listening" line (instant SIGINT exits 0)', async () => {
+  const env = { PATH: process.env.PATH, AVRONE_ISSUER: ISSUER, AVRONE_AUDIENCE: AUDIENCE, AVRONE_JWT_SECRET: SECRET, PORT: '0' };
+  const child = spawn(process.execPath, [require.resolve('../src/proxy.js')], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+  child.stdout.on('data', (d) => { if (/listening/.test(d)) child.kill('SIGINT'); });
+  const code = await new Promise((r) => child.on('close', (c) => r(c)));
+  assert.equal(code, 0);
+});
+
+test('R4-11 (hardening): every response carries a server-generated x-request-id; caller values are ignored', async (t) => {
+  const s = await startServer(); t.after(() => s.close());
+  const r = await raw(s.port, { path: '/nope', headers: { 'x-request-id': 'caller-chosen-id' } });
+  assert.notEqual(r.headers['x-request-id'], 'caller-chosen-id');
+  assert.match(r.headers['x-request-id'], /^[0-9a-f-]{36}$/);
+  const r2 = await raw(s.port, { path: '/nope' });
+  assert.notEqual(r2.headers['x-request-id'], r.headers['x-request-id'], 'unique per request');
+  assert.ok(startFromEnv);
 });

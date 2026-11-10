@@ -20,7 +20,11 @@ const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 // emoji sequences in reasons still work.)
 const SPOOF_CHARS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u061c\u200b\u200c\u200e\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff\ufff9-\ufffb\ufffd]/u;
 const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
-const isCleanText = (s) => !SPOOF_CHARS.test(s) && !LONE_SURROGATE.test(s);
+// Free-text reasons may contain TAB and LF but never CR (terminal overwrite spoofing).
+const isCleanText = (s) => !SPOOF_CHARS.test(s) && !LONE_SURROGATE.test(s) && !s.includes('\r');
+// Metadata values are short config strings that could one day be forwarded (e.g. as
+// headers upstream): no C0 controls at all, so CR/LF/TAB injection is impossible.
+const isCleanValue = (s) => isCleanText(s) && !/[\u0000-\u001f]/.test(s);
 const DEFAULT_MAX_HISTORY = 1000;
 
 const VALIDATORS = {
@@ -39,8 +43,11 @@ const VALIDATORS = {
   metadata: (v) => v !== null && typeof v === 'object' && !Array.isArray(v)
     && Object.keys(v).length <= 50
     && Object.entries(v).every(([k, val]) => /^[A-Za-z0-9_.-]{1,64}$/.test(k) && !FORBIDDEN_KEYS.has(k)
-      && (typeof val === 'string' ? val.length <= 512 && isCleanText(val)
-        : ((typeof val === 'number' && Number.isFinite(val)) || typeof val === 'boolean'))),
+      && (typeof val === 'string' ? val.length <= 512 && isCleanValue(val)
+        // Integers beyond 2^53 cannot be represented exactly (9007199254740993 would be
+        // stored as ...992), so they are rejected rather than silently altered.
+        : ((typeof val === 'number' && Number.isFinite(val) && (!Number.isInteger(val) || Number.isSafeInteger(val)))
+          || typeof val === 'boolean'))),
 };
 
 class ValidationError extends Error {

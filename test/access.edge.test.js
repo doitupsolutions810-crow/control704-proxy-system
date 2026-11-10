@@ -224,7 +224,7 @@ test('HTTP access matrix and redaction', async (t) => {
     const types = new Set(r.json.map((e) => e.type));
     for (const ty of ['auth.failure', 'authz.denied', 'request', 'dataset.override', 'dataset.revert']) assert.ok(types.has(ty), ty);
     for (const e of r.json.filter((x) => x.type === 'auth.failure')) {
-      assert.deepEqual(Object.keys(e).sort(), ['method', 'path', 'reason', 'requestId', 'ts', 'type']);
+      assert.deepEqual(Object.keys(e).sort(), ['method', 'path', 'reason', 'requestId', 'seq', 'ts', 'type']);
     }
   });
 });

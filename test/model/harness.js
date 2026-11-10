@@ -122,6 +122,7 @@ function fakeCall(app, { method, url, token, body }) {
     let status = null;
     const res = {
       writeHead(s) { status = s; },
+      setHeader() {},
       end(payload) { let json = null; try { json = JSON.parse(payload); } catch { /* ignore */ } resolve({ status, json }); },
       on() {},
     };

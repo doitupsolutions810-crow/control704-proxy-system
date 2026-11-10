@@ -41,9 +41,19 @@ The `auth` mode label is intentionally **not** overridable, so an override can n
 | `AVRONE_JWT_PUBLIC_KEY` | one of | PEM public key for RS256 (RSA ≥ 2048) or ES256 (P-256); `\n` escapes and CRLF allowed; private keys are rejected |
 | `AVRONE_CLOCK_SKEW_SEC` | no | Allowed clock skew, default `30` |
 | `AVRONE_MAX_TOKEN_AGE_SEC` | no | Reject tokens whose `iat` is older than this |
-| `HOST` / `PORT` | no | Default `127.0.0.1:8704` |
+| `HOST` / `PORT` | no | Default `127.0.0.1:8704`; `PORT` must be an integer 0–65535, `HOST` must not contain whitespace or `/` |
 
 Secrets come only from the environment. See `.env.example`; never commit real values.
+
+### Startup, shutdown and restart
+- **Invalid or missing env**: the process prints one line, `control704: startup failed: <reason>`, to stderr and exits `1`. The line names the variable, never includes secret or key values, and has no stack trace. A port already in use reports `Port <p> on <host> is already in use`.
+- **Readiness**: `Control704 proxy listening on http://host:port` is printed only after the SIGTERM/SIGINT handlers are installed.
+- **Graceful shutdown** (SIGTERM/SIGINT, or `close(graceMs)` from `startFromEnv()`):
+  - New connections are refused immediately and idle keep-alive sockets are closed.
+  - In-flight requests may finish.
+  - Anything still open after `graceMs` (default 10 s) is force-closed.
+  - Then the process exits `0`. `close()` is idempotent.
+- **Restart semantics**: all state is in memory. Every start begins from the X/Y/Z defaults with an empty override history and an empty audit buffer, and old override ids are unknown (404). Auth is stateless, so tokens stay valid across restarts unless the secret or key is rotated.
 
 ## Wiring Avrone Due'Krey as the auth provider
 Configure Avrone Due'Krey to issue JWTs with:
@@ -121,7 +131,13 @@ MODEL_SEEDS=42 MODEL_STEPS=2000 node --test test/model.test.js     # reproduce a
 | `unicode` | NFC/NFD, exhaustive `toUpperCase` scan for dataset ids, lookalike roles/scopes, bidi/zero-width chars, surrogates, overlong UTF-8, mixed-case percent-encoding |
 | `ratelimit` | `rateLimitPerMinute` boundaries and per-route config (config only: **not enforced**) |
 | `characterization` | Documents current behaviour for the open questions (scope-only admin actions, internal upstreams). **Not** an endorsement |
-| `regressions` | One explicit test per previously fixed bug (R2-1..R2-8, R3-1..R3-12) |
+| `protocol` | HTTP/1.x edges, run over raw sockets: CL/TE smuggling, duplicate CL, obs-fold, bare CR/LF, chunk-size overflow and extensions, trailers carrying Authorization, keep-alive/pipelining auth isolation, HTTP/1.0, absolute-form targets, `Expect: 100-continue` gating, very long URLs, CRLF injection, x-request-id |
+| `json` | JSON parser edges: big numbers, `-0`, `1e309`, deep arrays/objects, BOM, nested duplicate keys, nested `__proto__`/`constructor`, unsafe integers, control characters |
+| `audit` | Audit integrity: frozen entries, system-owned `seq`/`ts`, strict ordering under concurrency, no newline forging, redaction, export under scope, ring cap boundary, sink failures |
+| `lifecycle` | Startup failure for each env var (real child process), port in use, SIGTERM/SIGINT, graceful shutdown with in-flight/idle/stuck requests, restart semantics |
+| `invariants` | Cross-dataset invariants under random concurrent interleavings (Promise races with chunked bodies, plus real sockets): endpoint uniqueness, state matches the last active record, LIFO chains, id uniqueness |
+| `differential` | Production JWT verifier vs an independent reference built on different Node primitives: thousands of seeded HS256/RS256/ES256 tokens (valid, tampered, alg-confused, boundary claims) must get identical decisions and payloads |
+| `regressions` | One explicit test per previously fixed bug (R2-1..R2-8, R3-1..R3-12, R4-1..R4-11) |
 | `slow/` | Statistical HMAC timing check, long model sweep |
 
 ### Resource limits (defaults, `createApp().server(options)` to override)
@@ -133,7 +149,16 @@ MODEL_SEEDS=42 MODEL_STEPS=2000 node --test test/model.test.js     # reproduce a
 | `maxConnections` | 1024 |
 | Token size | 8 KiB |
 | Audit ring buffer | 1000 entries in memory (`createAuditLogger({ maxEntries })`); the sink gets every event |
+| Request id | Every response carries a server-generated `x-request-id` (UUID); caller-supplied values are ignored |
+| HTTP version / Host | Only HTTP/1.x is served (others get 505); duplicate `Host` gets 400 |
+| `Expect: 100-continue` | `100 Continue` is sent only after routing, authentication, authorisation and the content-type/length checks pass |
 | Override history | 1000 records (`new DatasetStore(undefined, { maxHistory })`); older records are compacted and can no longer be reverted |
+
+### Data rules (round 4)
+- Metadata string values: ≤ 512 chars, no C0/C1 controls (including CR, LF, TAB), no bidi or zero-width characters, no lone surrogates. Numbers must be finite, and integers must be safe (≤ 2^53−1).
+- Override reasons: 3–500 chars. LF and TAB are allowed; CR, bidi/zero-width characters and lone surrogates are not.
+- Audit entries are deep-frozen. `seq` and `ts` are assigned by the logger, and each entry is one JSON line, so embedded newlines are escaped. `recent(n)` clamps `n`, and a failing sink is counted but never breaks a request.
+- Reverts are LIFO per dataset and must never create an endpoint clash. As a result, a revert can be refused until a conflicting dataset moves. Uniqueness takes priority over revertibility; see `invariants` for a minimal example.
 
 ## Limitations / next steps
 - Overrides and audit entries are in memory (lost on restart); swap in persistent storage for production.
