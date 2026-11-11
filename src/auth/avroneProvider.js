@@ -41,7 +41,10 @@ function parseJson(buf) {
 function parseIntStrict(v, name) {
   if (v === undefined || v === null || v === '') return undefined;
   if (!/^\d+$/.test(String(v).trim())) throw new Error(`${name} must be a non-negative integer`);
-  return Number.parseInt(String(v).trim(), 10);
+  const n = Number.parseInt(String(v).trim(), 10);
+  // Values past 2^53 silently lose precision; refuse them rather than guess.
+  if (!Number.isSafeInteger(n)) throw new Error(`${name} is too large`);
+  return n;
 }
 
 function loadConfigFromEnv(env = process.env) {
@@ -60,6 +63,14 @@ function loadConfigFromEnv(env = process.env) {
 function validateConfig(cfg) {
   if (!cfg.issuer) throw new Error('AVRONE_ISSUER is required');
   if (!cfg.audience) throw new Error('AVRONE_AUDIENCE is required');
+  // A stray CR from a Windows .env, padding, or an invisible character would make every token
+  // fail the exact iss/aud comparison with no hint why; refuse it at startup instead.
+  for (const [name, v] of [['AVRONE_ISSUER', cfg.issuer], ['AVRONE_AUDIENCE', cfg.audience]]) {
+    if (typeof v !== 'string') throw new Error(`${name} must be a string`);
+    if (v !== v.trim() || INVISIBLE_OR_CONTROL.test(v)) {
+      throw new Error(`${name} must not have leading/trailing whitespace or control/invisible characters`);
+    }
+  }
   if (!cfg.secret && !cfg.publicKey) {
     throw new Error('Set AVRONE_JWT_SECRET (HS256) or AVRONE_JWT_PUBLIC_KEY (RS256/ES256)');
   }

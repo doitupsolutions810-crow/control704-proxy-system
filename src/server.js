@@ -97,8 +97,8 @@ function readJson(req, res) {
   });
 }
 
-function createApp({ provider, store = new DatasetStore(), audit = createAuditLogger() } = {}) {
-  const authenticator = createAuthenticator(provider);
+function createApp({ provider, store = new DatasetStore(), audit = createAuditLogger(), authTimeoutMs } = {}) {
+  const authenticator = createAuthenticator(provider, authTimeoutMs === undefined ? {} : { timeoutMs: authTimeoutMs });
 
   // [method, regex, requiredScopes(params) | null (public), handler]
   const routes = [
@@ -151,7 +151,11 @@ function createApp({ provider, store = new DatasetStore(), audit = createAuditLo
     try {
       // Fixed base; only the path is used. Malformed request targets get 400 instead of
       // an unhandled rejection that left the connection hanging.
-      url = new URL(req.url, 'http://localhost');
+      // An origin-form target ("/...") is always a path (RFC 9112 §3.2.1). Resolving it as a
+      // relative reference would read "//host/rest" as scheme-relative and silently drop the
+      // first segment, so "//x/admin/audit" would route as "/admin/audit" while a front proxy
+      // sees a different path. Prefix the fixed origin instead so the whole target stays path.
+      url = req.url.startsWith('/') ? new URL(`http://localhost${req.url}`) : new URL(req.url, 'http://localhost');
     } catch {
       return send(res, 400, { error: 'bad_request', message: 'Malformed request target' });
     }
@@ -173,6 +177,11 @@ function createApp({ provider, store = new DatasetStore(), audit = createAuditLo
           principal = await authenticator.authenticate(req);
         } catch (err) {
           const code = err instanceof AuthError ? err.code : 'invalid_token';
+          if (code === 'auth_unavailable') {
+            // The provider did not answer in time: fail closed, but as a retryable 503, not a 401.
+            audit.log({ ...base, type: 'auth.unavailable' });
+            return send(res, 503, { error: 'auth_unavailable' }, { 'retry-after': '5' });
+          }
           audit.log({ ...base, type: 'auth.failure', reason: code });
           return send(res, 401, { error: 'unauthorized', reason: code },
             { 'www-authenticate': `Bearer realm="control704", error="${code === 'missing_token' || code === 'invalid_request' ? 'invalid_request' : 'invalid_token'}"` });

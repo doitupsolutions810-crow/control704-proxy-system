@@ -35,12 +35,12 @@ The `auth` mode label is intentionally **not** overridable, so an override can n
 
 | Var | Required | Description |
 |---|---|---|
-| `AVRONE_ISSUER` | yes | Expected `iss` claim of Avrone Due'Krey tokens |
-| `AVRONE_AUDIENCE` | yes | Expected `aud` claim (e.g. `control704-proxy`) |
+| `AVRONE_ISSUER` | yes | Expected `iss` claim of Avrone Due'Krey tokens; no leading/trailing whitespace (e.g. a stray CR) or invisible characters |
+| `AVRONE_AUDIENCE` | yes | Expected `aud` claim (e.g. `control704-proxy`); same character rules as `AVRONE_ISSUER` |
 | `AVRONE_JWT_SECRET` | one of | HS256 shared secret, ≥ 32 bytes, no leading/trailing whitespace, not low-variety |
 | `AVRONE_JWT_PUBLIC_KEY` | one of | PEM public key for RS256 (RSA ≥ 2048) or ES256 (P-256); `\n` escapes and CRLF allowed; private keys are rejected |
-| `AVRONE_CLOCK_SKEW_SEC` | no | Allowed clock skew, default `30` |
-| `AVRONE_MAX_TOKEN_AGE_SEC` | no | Reject tokens whose `iat` is older than this |
+| `AVRONE_CLOCK_SKEW_SEC` | no | Allowed clock skew, default `30`, integer 0–300 |
+| `AVRONE_MAX_TOKEN_AGE_SEC` | no | Reject tokens whose `iat` is older than this; positive safe integer |
 | `HOST` / `PORT` | no | Default `127.0.0.1:8704`; `PORT` must be an integer 0–65535, `HOST` must not contain whitespace or `/` |
 
 Secrets come only from the environment. See `.env.example`; never commit real values.
@@ -67,6 +67,11 @@ Configure Avrone Due'Krey to issue JWTs with:
 `roles` (array) and `scope` (space-separated) / `scp` (array) are both honoured.
 Prefer RS256/ES256 with `AVRONE_JWT_PUBLIC_KEY` so the proxy never holds a signing secret.
 To use a different identity provider, pass any `{ name, verify(token) }` object to `createApp({ provider })`.
+Whatever `verify()` returns must be a plain object with a non-empty string `sub`, or the request is rejected (401).
+`verify()` is cut off after `authTimeoutMs` (default 5000, `createApp({ provider, authTimeoutMs })`); a timeout returns `503 auth_unavailable` with `Retry-After: 5`, never access.
+
+### Issuer contract (avrone-chat → proxy)
+`src/auth/issuer.js` (`mintAvroneToken`) is the reference issuer: header `{"alg":"HS256","typ":"JWT"}`, claims `iss, aud, sub, roles, iat, exp, jti`, TTL ≤ 300 s. The avrone-chat app (`living-intermediate-control-plane/avrone-chat`, `lib/control704/avrone-jwt.ts`, `CONTROL704_PROXY_<T>_TOKEN_MODE=avrone-jwt`) mints exactly this layout; `test/fixtures/avrone-chat-tokens.json` holds golden tokens produced by that code with a TEST-ONLY secret, and `test/contract.test.js` checks both directions.
 
 ### Roles → scopes
 | Role | Scopes |
@@ -86,7 +91,7 @@ To use a different identity provider, pass any `{ name, verify(token) }` object 
 | `POST /admin/overrides/{overrideId}/revert` | `datasets:revert` |
 | `GET /admin/audit` | `audit:read` |
 
-Errors: `401` (missing/invalid/expired token or duplicate `Authorization` headers, with `WWW-Authenticate`), `403` (`insufficient_scope`, lists required scopes), `400` (validation / malformed JSON / non-object body / malformed request target), `404`, `405` (with `Allow`; includes `HEAD`/`OPTIONS`), `413` (body > 16 KiB), `415` (non-JSON content-type), `503` (route disabled).
+Errors: `401` (missing/invalid/expired token or duplicate `Authorization` headers, with `WWW-Authenticate`), `403` (`insufficient_scope`, lists required scopes), `400` (validation / malformed JSON / non-object body / malformed request target), `404`, `405` (with `Allow`; includes `HEAD`/`OPTIONS`), `413` (body > 16 KiB), `415` (non-JSON content-type), `503` (route disabled, or `auth_unavailable` when the provider times out).
 
 Token rules enforced: `alg` must exactly match the configured key type (`none`, case variants and HS/RS swaps rejected); `crit` headers rejected; `kid`/`jku`/`x5u`/`jwk` ignored (never used to pick keys); segments must be canonical base64url without padding; token ≤ 8 KiB; `exp` required and numeric; `nbf`/`iat` must be numeric if present and `iat` may not be in the future (beyond skew); `sub` 1–256 chars without control, zero-width, bidi or other format characters or lone surrogates; token JSON must be strict UTF-8; RSA keys ≥ 2048 bits; EC keys must be P-256. Tokens are only accepted from the `Authorization` header (never query strings).
 
@@ -137,8 +142,14 @@ MODEL_SEEDS=42 MODEL_STEPS=2000 node --test test/model.test.js     # reproduce a
 | `lifecycle` | Startup failure for each env var (real child process), port in use, SIGTERM/SIGINT, graceful shutdown with in-flight/idle/stuck requests, restart semantics |
 | `invariants` | Cross-dataset invariants under random concurrent interleavings (Promise races with chunked bodies, plus real sockets): endpoint uniqueness, state matches the last active record, LIFO chains, id uniqueness |
 | `differential` | Production JWT verifier vs an independent reference built on different Node primitives: thousands of seeded HS256/RS256/ES256 tokens (valid, tampered, alg-confused, boundary claims) must get identical decisions and payloads |
-| `regressions` | One explicit test per previously fixed bug (R2-1..R2-8, R3-1..R3-12, R4-1..R4-11) |
-| `slow/` | Statistical HMAC timing check, long model sweep |
+| `regressions`, `regressions-r5` | One explicit test per previously fixed bug (R2-1..R2-8, R3-1..R3-12, R4-1..R4-11, R5-1..R5-5) |
+| `contract` | Golden tokens from the avrone-chat issuer verify and map to the right principal; claim layout; expiry/max-age boundaries; tampering; byte-identical reference issuer |
+| `e2e` | Full per-role journeys over a real socket via `startFromEnv` (anonymous, viewer, technician, admin override→audit→revert, multi-role, expired/foreign tokens, keep-alive identity isolation) |
+| `chaos` | Failing/slow/non-Error audit sinks, broken clocks, providers that throw, return junk or hang, store faults, clients resetting mid-request and mid-response; asserts no unhandled rejections |
+| `canonicalization` | Differential vs Node's WHATWG URL parser over random raw targets; admin-route spellings; Authorization header case/OWS/scheme/duplicate/folded variants |
+| `config.fuzz` | Every env var fuzzed alone and in combination: sane config or an Error naming the variable, never echoing secrets, never hanging |
+| `memory` (+ `memory-worker.js`) | `--expose-gc` child: mixed traffic must not grow the heap; caps and handles checked |
+| `slow/` | Statistical HMAC timing check, long model sweep, 40k-request heap soak |
 
 ### Resource limits (defaults, `createApp().server(options)` to override)
 | Limit | Default |
@@ -153,6 +164,9 @@ MODEL_SEEDS=42 MODEL_STEPS=2000 node --test test/model.test.js     # reproduce a
 | HTTP version / Host | Only HTTP/1.x is served (others get 505); duplicate `Host` gets 400 |
 | `Expect: 100-continue` | `100 Continue` is sent only after routing, authentication, authorisation and the content-type/length checks pass |
 | Override history | 1000 records (`new DatasetStore(undefined, { maxHistory })`); older records are compacted and can no longer be reverted |
+
+### Request targets (round 5)
+- Origin-form targets (`/...`) are always treated as a path (RFC 9112): `//x/admin/audit` is the path `//x/admin/audit` (404), not host `x` + `/admin/audit`. Dot segments, `%2e` and `\` are normalised per WHATWG before routing and authorisation.
 
 ### Data rules (round 4)
 - Metadata string values: ≤ 512 chars, no C0/C1 controls (including CR, LF, TAB), no bidi or zero-width characters, no lone surrogates. Numbers must be finite, and integers must be safe (≤ 2^53−1).

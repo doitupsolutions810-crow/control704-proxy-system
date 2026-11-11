@@ -32,19 +32,45 @@ function toPrincipal(claims, providerName) {
   return { sub: claims.sub, provider: providerName, roles, scopes, claims };
 }
 
-function createAuthenticator(provider) {
+const DEFAULT_AUTH_TIMEOUT_MS = 5000;
+
+// Defence in depth for pluggable providers: whatever verify() resolves must be a plain claims
+// object with a non-empty string subject, or the request is NOT authenticated.
+function assertClaims(claims) {
+  if (claims === null || typeof claims !== 'object' || Array.isArray(claims)) {
+    throw new AuthError('Auth provider returned invalid claims', 'invalid_token');
+  }
+  if (typeof claims.sub !== 'string' || claims.sub.length === 0) {
+    throw new AuthError('Auth provider returned claims without a subject', 'invalid_token');
+  }
+  return claims;
+}
+
+function createAuthenticator(provider, { timeoutMs = DEFAULT_AUTH_TIMEOUT_MS } = {}) {
   if (!provider || typeof provider.verify !== 'function') {
     throw new Error('Auth provider must implement verify(token)');
   }
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60000) {
+    throw new Error('Auth timeout must be an integer between 1 and 60000 ms');
+  }
   return {
     provider,
+    timeoutMs,
     async authenticate(req) {
       const token = extractBearer(req);
       if (!token) throw new AuthError('Missing bearer token', 'missing_token');
-      const claims = await provider.verify(token);
-      return toPrincipal(claims, provider.name);
+      let timer;
+      const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new AuthError('Auth provider timed out', 'auth_unavailable')), timeoutMs);
+      });
+      try {
+        const claims = await Promise.race([Promise.resolve().then(() => provider.verify(token)), timeout]);
+        return toPrincipal(assertClaims(claims), provider.name);
+      } finally {
+        clearTimeout(timer);
+      }
     },
   };
 }
 
-module.exports = { createAuthenticator, extractBearer, toPrincipal, AuthError };
+module.exports = { createAuthenticator, DEFAULT_AUTH_TIMEOUT_MS, extractBearer, toPrincipal, AuthError };
