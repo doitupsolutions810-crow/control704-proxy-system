@@ -135,4 +135,17 @@ module.exports = [
   ['M119', 'src/auth/issuer.js', 'ttlSec < 1 || ttlSec > MAX_TTL_SEC', 'ttlSec < 1', 'reference issuer mints tokens past the 300 s TTL cap'],
   ['M120', 'src/auth/issuer.js', "if (typeof sub !== 'string' || !sub || sub.length > 256)", "if (typeof sub !== 'string')", 'reference issuer mints empty/oversized sub'],
   ['M121', 'src/auth/issuer.js', "if (!Array.isArray(roles) || !roles.every((r) => typeof r === 'string'))", 'if (!Array.isArray(roles))', 'reference issuer mints non-string roles'],
+  // ---- round 6: disconnect handling, audit redaction, content-length ----
+  ['M122', 'src/server.js', '      if (clientGone(req, res)) {\n        audit.log', '      if (false) {\n        audit.log', 'handler still runs after the client left during auth'],
+  ['M123', 'src/server.js', "if (clientGone(req, res) && !req.complete) { reject(new ClientGoneError()); return; }", '', 'readJson waits forever on an already-destroyed request'],
+  ['M124', 'src/server.js', "    req.on('close', () => { if (!req.complete && !settled) { settled = true; reject(new ClientGoneError()); } });\n", '', 'readJson hangs when the client disconnects mid-body'],
+  ['M125', 'src/server.js', '      if (err instanceof ClientGoneError) {\n        audit.log', '      if (false) {\n        audit.log', 'client-gone requests answered/audited as 500 errors'],
+  ['M126', 'src/access/audit.js', 'copy = redactDeep(JSON.parse(JSON.stringify(rest)));', 'copy = JSON.parse(JSON.stringify(rest));', 'audit redaction of nested keys and credential strings removed'],
+  ['M127', 'src/access/audit.js', "depth > 0 && SENSITIVE_NESTED.has(k.toLowerCase().replace(/[-_]/g, ''))", "depth > 0 && SENSITIVE_NESTED.has(k)", 'nested key redaction case/separator-sensitive'],
+  ['M128', 'src/access/audit.js', "return v.replace(JWT_LIKE, '[REDACTED_JWT]').replace(CREDENTIAL", "return v.replace(CREDENTIAL", 'JWT-shaped strings in values not redacted'],
+  ['M129', 'src/access/audit.js', ".replace(CREDENTIAL, (_, scheme, ws) => `${scheme}${ws}${REDACTED}`);", ';', 'Bearer/Basic credentials in values not redacted'],
+  ['M130', 'src/access/audit.js', '(?=[A-Za-z]*[0-9._~+/=-])', '', 'credential redaction over-matches prose'],
+  ['M131', 'src/access/audit.js', 'if (depth > 64) return REDACTED;', 'if (depth > 100000) return REDACTED;', 'redaction depth unbounded'],
+  ['M132', 'src/server.js', "    'content-length': Buffer.byteLength(payload),\n", '', 'responses fall back to chunked encoding'],
+  ['M133', 'src/server.js', "'content-length': Buffer.byteLength(payload)", "'content-length': payload.length", 'content-length counts UTF-16 units, not bytes'],
 ];

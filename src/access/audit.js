@@ -28,7 +28,9 @@ const REDACTED_KEYS = new Set(['token', 'authorization', 'Authorization', 'secre
 const SENSITIVE_NESTED = new Set(['token', 'accesstoken', 'refreshtoken', 'idtoken', 'bearer', 'authorization', 'proxyauthorization',
   'secret', 'clientsecret', 'jwtsecret', 'password', 'passwd', 'apikey', 'xapikey', 'cookie', 'setcookie', 'privatekey', 'session', 'sessionid']);
 const JWT_LIKE = /eyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]*/g;
-const CREDENTIAL = /\b(Bearer|Basic)(\s+)[A-Za-z0-9._~+/=-]{4,}/gi;
+// The credential must look like one (6+ chars incl. a digit or token punctuation), so prose
+// such as "no bearer here" is left alone.
+const CREDENTIAL = /\b(Bearer|Basic)(\s+)(?=[A-Za-z]*[0-9._~+/=-])[A-Za-z0-9._~+/=-]{6,}/gi;
 const REDACTED = '[REDACTED]';
 
 function scrubString(v) {
