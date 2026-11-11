@@ -36,13 +36,25 @@ function send(res, status, body, extraHeaders = {}) {
     'content-type': 'application/json; charset=utf-8',
     'cache-control': 'no-store',
     'x-content-type-options': 'nosniff',
+    // Explicit length: writeHead() before end() would otherwise force chunked encoding.
+    'content-length': Buffer.byteLength(payload),
     ...extraHeaders,
   });
   res.end(payload);
 }
 
+// The client went away before the request could be processed. Nothing can be sent; the
+// request is audited as aborted and never reaches a handler's side effects.
+class ClientGoneError extends Error {
+  constructor() { super('Client disconnected'); this.name = 'ClientGoneError'; }
+}
+const clientGone = (req, res) => Boolean(req.destroyed || (res && res.destroyed) || (req.socket && req.socket.destroyed));
+
 function readJson(req, res) {
   return new Promise((resolve, reject) => {
+    // If the client disconnected earlier (e.g. while authentication was still running), the
+    // request stream is already destroyed and will never emit 'end' or 'error'.
+    if (clientGone(req, res) && !req.complete) { reject(new ClientGoneError()); return; }
     const ct = req.headers['content-type'] || '';
     if (!/^application\/json\s*(;.*)?$/i.test(ct)) {
       req.resume();
@@ -94,6 +106,8 @@ function readJson(req, res) {
       resolve(parsed);
     });
     req.on('error', reject);
+    // A disconnect mid-body emits 'close' without 'end'; settle instead of hanging forever.
+    req.on('close', () => { if (!req.complete && !settled) { settled = true; reject(new ClientGoneError()); } });
   });
 }
 
@@ -194,10 +208,20 @@ function createApp({ provider, store = new DatasetStore(), audit = createAuditLo
         }
       }
 
+      // Authentication can be slow (pluggable providers); if the client left meanwhile, do not
+      // run the handler (no side effects for a request nobody is waiting for).
+      if (clientGone(req, res)) {
+        audit.log({ ...base, type: 'request.aborted', actor: principal && principal.sub });
+        return undefined;
+      }
       const [status, body] = await handler({ req, res, params, principal, requestId });
       if (principal) audit.log({ ...base, type: 'request', actor: principal.sub, status });
       return send(res, status, body);
     } catch (err) {
+      if (err instanceof ClientGoneError) {
+        audit.log({ ...base, type: 'request.aborted', actor: principal && principal.sub });
+        return undefined;
+      }
       if (err instanceof HttpError) {
         if (err.closeConnection) {
           // "Lingering close": after the 413 is flushed, send FIN but keep discarding incoming

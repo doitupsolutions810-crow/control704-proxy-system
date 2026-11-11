@@ -1,5 +1,7 @@
 'use strict';
-// Structured (JSON lines) audit logger. Never logs tokens or Authorization headers.
+// Structured (JSON lines) audit logger. Never logs tokens or Authorization headers: sensitive
+// keys are dropped (top level) or redacted (nested), and JWT-shaped or Bearer/Basic credential
+// strings are redacted anywhere in an entry.
 //
 // Integrity guarantees:
 // - `seq` (strictly increasing) and `ts` are assigned by the logger and cannot be supplied
@@ -21,6 +23,29 @@ function deepFreeze(o) {
 }
 
 const REDACTED_KEYS = new Set(['token', 'authorization', 'Authorization', 'secret', 'password']);
+// Nested keys are matched case-insensitively with '-'/'_' removed (exact names, not substrings,
+// so e.g. "secretary" or "tokens_used" are kept).
+const SENSITIVE_NESTED = new Set(['token', 'accesstoken', 'refreshtoken', 'idtoken', 'bearer', 'authorization', 'proxyauthorization',
+  'secret', 'clientsecret', 'jwtsecret', 'password', 'passwd', 'apikey', 'xapikey', 'cookie', 'setcookie', 'privatekey', 'session', 'sessionid']);
+const JWT_LIKE = /eyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]*/g;
+const CREDENTIAL = /\b(Bearer|Basic)(\s+)[A-Za-z0-9._~+/=-]{4,}/gi;
+const REDACTED = '[REDACTED]';
+
+function scrubString(v) {
+  return v.replace(JWT_LIKE, '[REDACTED_JWT]').replace(CREDENTIAL, (_, scheme, ws) => `${scheme}${ws}${REDACTED}`);
+}
+// Applied to the JSON-safe copy only: stored data and API responses are not changed.
+function redactDeep(v, depth = 0) {
+  if (typeof v === 'string') return scrubString(v);
+  if (!v || typeof v !== 'object') return v;
+  if (depth > 64) return REDACTED;
+  if (Array.isArray(v)) return v.map((x) => redactDeep(x, depth + 1));
+  const out = {};
+  for (const [k, x] of Object.entries(v)) {
+    out[k] = depth > 0 && SENSITIVE_NESTED.has(k.toLowerCase().replace(/[-_]/g, '')) ? REDACTED : redactDeep(x, depth + 1);
+  }
+  return out;
+}
 
 function createAuditLogger({ sink, maxEntries = 1000, onSinkError } = {}) {
   if (!Number.isInteger(maxEntries) || maxEntries < 1) throw new Error('maxEntries must be a positive integer');
@@ -40,7 +65,7 @@ function createAuditLogger({ sink, maxEntries = 1000, onSinkError } = {}) {
       }
       let copy;
       try {
-        copy = JSON.parse(JSON.stringify(rest));
+        copy = redactDeep(JSON.parse(JSON.stringify(rest)));
       } catch {
         copy = { type: 'audit.unserializable', originalType: typeof src.type === 'string' ? src.type : null };
       }
@@ -69,4 +94,4 @@ function createAuditLogger({ sink, maxEntries = 1000, onSinkError } = {}) {
   };
 }
 
-module.exports = { createAuditLogger, deepFreeze };
+module.exports = { createAuditLogger, deepFreeze, redactDeep };

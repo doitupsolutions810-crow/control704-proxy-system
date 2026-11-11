@@ -130,6 +130,6 @@ test('journey: one keep-alive connection serving admin then anonymous requests n
   sock.on('data', (d) => { data += d; });
   sock.write(`GET /admin/audit HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer ${a}\r\n\r\nGET /admin/audit HTTP/1.1\r\nHost: x\r\n\r\nGET /datasets HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n`);
   await new Promise((r) => sock.on('close', r));
-  const statuses = [...data.matchAll(/^HTTP\/1\.1 (\d{3})/gm)].map((m) => Number(m[1]));
+  const statuses = [...data.matchAll(/HTTP\/1\.1 (\d{3}) /g)].map((m) => Number(m[1]));
   assert.deepEqual(statuses, [200, 401, 401]);
 });
