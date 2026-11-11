@@ -1,0 +1,90 @@
+{
+  "_comment": "Golden tokens minted by living-intermediate-control-plane avrone-chat/lib/control704/avrone-jwt.ts (commit 4a19ec3) with a TEST-ONLY secret at a fixed clock. Regenerate with that issuer if the contract changes. Not real credentials.",
+  "issuer": "https://avrone-due-krey-chat.vercel.app",
+  "audience": "control704-proxy",
+  "secret": "golden-vector-TEST-ONLY-secret-not-for-production-01",
+  "nowMs": 1794333600000,
+  "vectors": [
+    {
+      "sub": "view1",
+      "role": "viewer",
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJodHRwczovL2F2cm9uZS1kdWUta3JleS1jaGF0LnZlcmNlbC5hcHAiLCJhdWQiOiJjb250cm9sNzA0LXByb3h5Iiwic3ViIjoidmlldzEiLCJyb2xlcyI6WyJ2aWV3ZXIiXSwiaWF0IjoxNzk0MzMzNjAwLCJleHAiOjE3OTQzMzM3MjAsImp0aSI6InlQMkh2UThDZDlPc1ZfQUoifQ.TCVMdORO2X-L6PFlMz2u3L9XgvDtyp8k3kVP6rYiOy0",
+      "claims": {
+        "iss": "https://avrone-due-krey-chat.vercel.app",
+        "aud": "control704-proxy",
+        "sub": "view1",
+        "roles": [
+          "viewer"
+        ],
+        "iat": 1794333600,
+        "exp": 1794333720,
+        "jti": "yP2HvQ8Cd9OsV_AJ"
+      }
+    },
+    {
+      "sub": "tech1",
+      "role": "technician",
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJodHRwczovL2F2cm9uZS1kdWUta3JleS1jaGF0LnZlcmNlbC5hcHAiLCJhdWQiOiJjb250cm9sNzA0LXByb3h5Iiwic3ViIjoidGVjaDEiLCJyb2xlcyI6WyJ0ZWNobmljaWFuIl0sImlhdCI6MTc5NDMzMzYwMCwiZXhwIjoxNzk0MzMzNzIwLCJqdGkiOiJjcXIzbW12ODRIblV1YXhqIn0.QYIsjxDO_sE2Ye0d4P5KKRu_2PjA_UJfgBOijErOts4",
+      "claims": {
+        "iss": "https://avrone-due-krey-chat.vercel.app",
+        "aud": "control704-proxy",
+        "sub": "tech1",
+        "roles": [
+          "technician"
+        ],
+        "iat": 1794333600,
+        "exp": 1794333720,
+        "jti": "cqr3mmv84HnUuaxj"
+      }
+    },
+    {
+      "sub": "jean",
+      "role": "admin",
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJodHRwczovL2F2cm9uZS1kdWUta3JleS1jaGF0LnZlcmNlbC5hcHAiLCJhdWQiOiJjb250cm9sNzA0LXByb3h5Iiwic3ViIjoiamVhbiIsInJvbGVzIjpbImFkbWluIl0sImlhdCI6MTc5NDMzMzYwMCwiZXhwIjoxNzk0MzMzNzIwLCJqdGkiOiJVYy1GQXlDUDcyTjlhRDY5In0.NBeCrIC_9WlkOh5_F0tCHtTVlWpSsm17ROe4CfuZGG0",
+      "claims": {
+        "iss": "https://avrone-due-krey-chat.vercel.app",
+        "aud": "control704-proxy",
+        "sub": "jean",
+        "roles": [
+          "admin"
+        ],
+        "iat": 1794333600,
+        "exp": 1794333720,
+        "jti": "Uc-FAyCP72N9aD69"
+      }
+    },
+    {
+      "sub": "ops.tech-2",
+      "role": "technician",
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJodHRwczovL2F2cm9uZS1kdWUta3JleS1jaGF0LnZlcmNlbC5hcHAiLCJhdWQiOiJjb250cm9sNzA0LXByb3h5Iiwic3ViIjoib3BzLnRlY2gtMiIsInJvbGVzIjpbInRlY2huaWNpYW4iXSwiaWF0IjoxNzk0MzMzNjAwLCJleHAiOjE3OTQzMzM3MjAsImp0aSI6ImdjSWVieGdCTjZhaXUzcm0ifQ.Ck3GQYo9WULZD1WJDA-HqOMsU4gtJV4CE9BKWB0nTas",
+      "claims": {
+        "iss": "https://avrone-due-krey-chat.vercel.app",
+        "aud": "control704-proxy",
+        "sub": "ops.tech-2",
+        "roles": [
+          "technician"
+        ],
+        "iat": 1794333600,
+        "exp": 1794333720,
+        "jti": "gcIebxgBN6aiu3rm"
+      }
+    },
+    {
+      "sub": "jean",
+      "role": "admin",
+      "ttl": 300,
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJodHRwczovL2F2cm9uZS1kdWUta3JleS1jaGF0LnZlcmNlbC5hcHAiLCJhdWQiOiJjb250cm9sNzA0LXByb3h5Iiwic3ViIjoiamVhbiIsInJvbGVzIjpbImFkbWluIl0sImlhdCI6MTc5NDMzMzYwMCwiZXhwIjoxNzk0MzMzOTAwLCJqdGkiOiJlNGJoX0VmcVZKVkZwUVdIIn0.2MDoMGQ5zGUOhVDpbw70MphZauiM6VhMiE5qOiy3smA",
+      "claims": {
+        "iss": "https://avrone-due-krey-chat.vercel.app",
+        "aud": "control704-proxy",
+        "sub": "jean",
+        "roles": [
+          "admin"
+        ],
+        "iat": 1794333600,
+        "exp": 1794333900,
+        "jti": "e4bh_EfqVJVFpQWH"
+      }
+    }
+  ]
+}
