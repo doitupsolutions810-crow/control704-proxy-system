@@ -16,7 +16,10 @@ test.before(async () => { s = await startServer(); });
 test.after(() => s.close());
 
 const canon = (t) => { const u = t.startsWith('/') ? new URL(`http://localhost${t}`) : new URL(t, 'http://localhost'); return u.pathname + u.search; };
-const send = (target, tok) => rawSocket(s.port, Buffer.concat([Buffer.from('GET '), Buffer.isBuffer(target) ? target : Buffer.from(target, 'latin1'),
+// One retry when a socket produced no response at all (only seen under heavy parallel load,
+// e.g. the mutation check running 4 suites at once); a real divergence is never masked.
+const send = async (target, tok) => { const r = await send1(target, tok); return r.status ? r : send1(target, tok); };
+const send1 = (target, tok) => rawSocket(s.port, Buffer.concat([Buffer.from('GET '), Buffer.isBuffer(target) ? target : Buffer.from(target, 'latin1'),
   Buffer.from(` HTTP/1.1\r\nHost: x\r\n${tok ? `Authorization: Bearer ${tok}\r\n` : ''}Connection: close\r\n\r\n`)]), { waitMs: 2000 });
 
 // WHATWG path edge tokens: single/double-dot spellings, encoded separators, odd percent

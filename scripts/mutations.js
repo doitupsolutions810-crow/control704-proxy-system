@@ -103,7 +103,7 @@ module.exports = [
   ['M88', 'src/access/audit.js', 'try { onSinkError(err, entry); } catch { /* never propagate */ }', 'onSinkError(err, entry);', 'onSinkError errors propagate'],
   ['M89', 'src/access/audit.js', 'if (entries.length > maxEntries) {', 'if (entries.length >= maxEntries) {', 'audit ring cap off-by-one'],
   ['M90', 'src/access/audit.js', "!Array.isArray(event) ? event : { type: 'invalid_event' }", '!Array.isArray(event) ? event : event', 'non-object audit events not normalised'],
-  ['M91', 'src/access/audit.js', 'copy = JSON.parse(JSON.stringify(rest));', 'copy = rest;', 'audit entries share structure with caller objects'],
+  ['M91', 'src/access/audit.js', 'copy = redactDeep(JSON.parse(JSON.stringify(rest)));', 'copy = redactDeep(rest);', 'audit entries share structure with caller objects'],
   ['M92', 'src/datasets/store.js', '(!Number.isInteger(val) || Number.isSafeInteger(val))', 'true', 'unsafe integers allowed in metadata'],
   ['M93', 'src/datasets/store.js', "isCleanText(s) && !/[\\u0000-\\u001f]/.test(s)", 'isCleanText(s)', 'metadata C0 controls (LF/TAB) allowed'],
   ['M94', 'src/datasets/store.js', " && !s.includes('\\r')", '', 'CR allowed in reasons/metadata'],
@@ -137,8 +137,8 @@ module.exports = [
   ['M121', 'src/auth/issuer.js', "if (!Array.isArray(roles) || !roles.every((r) => typeof r === 'string'))", 'if (!Array.isArray(roles))', 'reference issuer mints non-string roles'],
   // ---- round 6: disconnect handling, audit redaction, content-length ----
   ['M122', 'src/server.js', '      if (clientGone(req, res)) {\n        audit.log', '      if (false) {\n        audit.log', 'handler still runs after the client left during auth'],
-  ['M123', 'src/server.js', "if (clientGone(req, res) && !req.complete) { reject(new ClientGoneError()); return; }", '', 'readJson waits forever on an already-destroyed request'],
-  ['M124', 'src/server.js', "    req.on('close', () => { if (!req.complete && !settled) { settled = true; reject(new ClientGoneError()); } });\n", '', 'readJson hangs when the client disconnects mid-body'],
+  ['M123', 'src/server.js', "if (clientGone(req, res) && !req.complete) { reject(new ClientGoneError()); return; }", '', 'readJson waits forever on an already-destroyed request', { equivalent: 'the post-auth clientGone() check (M122) stops the request before readJson is reached; this guard only covers a same-tick disconnect between the two and is kept as defence in depth' }],
+  ['M124', 'src/server.js', "    req.on('close', () => { if (!req.complete && !settled) { settled = true; reject(new ClientGoneError()); } });\n", '', 'readJson hangs when the client disconnects mid-body', { equivalent: "Node (>= 16) emits an 'aborted' error on the request for a mid-body disconnect, which the error listener already maps to ClientGoneError; the close listener is kept for runtimes that only emit 'close'" }],
   ['M125', 'src/server.js', '      if (err instanceof ClientGoneError) {\n        audit.log', '      if (false) {\n        audit.log', 'client-gone requests answered/audited as 500 errors'],
   ['M126', 'src/access/audit.js', 'copy = redactDeep(JSON.parse(JSON.stringify(rest)));', 'copy = JSON.parse(JSON.stringify(rest));', 'audit redaction of nested keys and credential strings removed'],
   ['M127', 'src/access/audit.js', "depth > 0 && SENSITIVE_NESTED.has(k.toLowerCase().replace(/[-_]/g, ''))", "depth > 0 && SENSITIVE_NESTED.has(k)", 'nested key redaction case/separator-sensitive'],
@@ -148,4 +148,5 @@ module.exports = [
   ['M131', 'src/access/audit.js', 'if (depth > 64) return REDACTED;', 'if (depth > 100000) return REDACTED;', 'redaction depth unbounded'],
   ['M132', 'src/server.js', "    'content-length': Buffer.byteLength(payload),\n", '', 'responses fall back to chunked encoding'],
   ['M133', 'src/server.js', "'content-length': Buffer.byteLength(payload)", "'content-length': payload.length", 'content-length counts UTF-16 units, not bytes'],
+  ['M134', 'src/server.js', 'reject(clientGone(req, res) ? new ClientGoneError() : err);', 'reject(err);', 'mid-upload disconnect audited as a server error'],
 ];

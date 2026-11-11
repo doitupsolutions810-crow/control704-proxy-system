@@ -80,12 +80,12 @@ test('redaction fuzz: tokens in paths, queries, odd headers and failed auth atte
 });
 
 test('redactDeep: safe look-alike keys are kept, values untouched unless credential-shaped, inputs not mutated', () => {
-  const input = { a: { secretary: 'Ann', tokens_used: 7, passwordPolicy: 'strong', Token: 'x', 'X-Api-Key': 'y', arr: [{ cookie: 'c' }, 'Bearer abcd1234', 'no bearer here'] } };
+  const input = { a: { secretary: 'Ann', tokens_used: 7, passwordPolicy: 'strong', Token: 'x', 'X-Api-Key': 'y', arr: [{ cookie: 'c' }, 'Bearer abcd1234', 'no bearer here', 'Bearer instrument issued'] } };
   const snapshot = JSON.stringify(input);
   const out = redactDeep(input);
   assert.equal(JSON.stringify(input), snapshot);
   assert.deepEqual(out, { a: { secretary: 'Ann', tokens_used: 7, passwordPolicy: 'strong', Token: '[REDACTED]', 'X-Api-Key': '[REDACTED]',
-    arr: [{ cookie: '[REDACTED]' }, 'Bearer [REDACTED]', 'no bearer here'] } });
+    arr: [{ cookie: '[REDACTED]' }, 'Bearer [REDACTED]', 'no bearer here', 'Bearer instrument issued'] } });
 });
 
 test('redactDeep: very deep or wide entries stay bounded and never throw', () => {

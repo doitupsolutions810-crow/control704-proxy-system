@@ -142,7 +142,13 @@ MODEL_SEEDS=42 MODEL_STEPS=2000 node --test test/model.test.js     # reproduce a
 | `lifecycle` | Startup failure for each env var (real child process), port in use, SIGTERM/SIGINT, graceful shutdown with in-flight/idle/stuck requests, restart semantics |
 | `invariants` | Cross-dataset invariants under random concurrent interleavings (Promise races with chunked bodies, plus real sockets): endpoint uniqueness, state matches the last active record, LIFO chains, id uniqueness |
 | `differential` | Production JWT verifier vs an independent reference built on different Node primitives: thousands of seeded HS256/RS256/ES256 tokens (valid, tampered, alg-confused, boundary claims) must get identical decisions and payloads |
-| `regressions`, `regressions-r5` | One explicit test per previously fixed bug (R2-1..R2-8, R3-1..R3-12, R4-1..R4-11, R5-1..R5-5) |
+| `regressions`, `regressions-r5` | One explicit test per previously fixed bug (R2-1..R2-8, R3-1..R3-12, R4-1..R4-11, R5-1..R5-5; R6-1..R6-3 live in `disconnect`, `redaction.fuzz`, `response.snapshot`) |
+| `auth.timeout` | Provider timeout/503 under 300 concurrent requests, timer-leak check, late resolve/reject after the deadline, boundaries, no retries, races with random latency |
+| `disconnect` | Clients leaving mid-auth or mid-upload: every handler settles, nothing is applied or reverted, audited as `request.aborted` |
+| `crossrepo.avrone-chat` | avrone-chat's real `avrone-jwt.ts` (Node type stripping) vs this verifier with 200 generated secrets; secret and `sub` rules agree; byte-identical tokens. Needs `AVRONE_CHAT_DIR` or a sibling checkout, else skipped |
+| `url.property` | WHATWG canonicalization properties: idempotence, raw == canonical status, audited path == canonical path, never 500, encoded vs raw separators |
+| `response.snapshot` | Per-status header/body snapshots: security headers, exact UTF-8 Content-Length, request-id, exact body keys, only the expected extra headers |
+| `redaction.fuzz` | Tokens/secrets injected via path, query, headers, reasons and metadata keys/values never reach the audit sink or buffer |
 | `contract` | Golden tokens from the avrone-chat issuer verify and map to the right principal; claim layout; expiry/max-age boundaries; tampering; byte-identical reference issuer |
 | `e2e` | Full per-role journeys over a real socket via `startFromEnv` (anonymous, viewer, technician, admin override→audit→revert, multi-role, expired/foreign tokens, keep-alive identity isolation) |
 | `chaos` | Failing/slow/non-Error audit sinks, broken clocks, providers that throw, return junk or hang, store faults, clients resetting mid-request and mid-response; asserts no unhandled rejections |
@@ -171,6 +177,9 @@ MODEL_SEEDS=42 MODEL_STEPS=2000 node --test test/model.test.js     # reproduce a
 ### Data rules (round 4)
 - Metadata string values: ≤ 512 chars, no C0/C1 controls (including CR, LF, TAB), no bidi or zero-width characters, no lone surrogates. Numbers must be finite, and integers must be safe (≤ 2^53−1).
 - Override reasons: 3–500 chars. LF and TAB are allowed; CR, bidi/zero-width characters and lone surrogates are not.
+- Audit redaction: top-level sensitive keys are dropped; nested keys such as `token`, `apiKey`, `client_secret`, `cookie`, `password` (case, `-` and `_` ignored) become `[REDACTED]`; JWT-shaped strings become `[REDACTED_JWT]` and `Bearer`/`Basic` credentials become `Bearer [REDACTED]` anywhere in an entry; entries deeper than 64 levels are collapsed. Only the audit copy is redacted: stored overrides and API responses keep what the admin sent.
+- A client that disconnects before its request is processed (e.g. during slow authentication) is audited as `request.aborted` and its handler never runs.
+- Every application response carries an explicit `Content-Length` (UTF-8 bytes).
 - Audit entries are deep-frozen. `seq` and `ts` are assigned by the logger, and each entry is one JSON line, so embedded newlines are escaped. `recent(n)` clamps `n`, and a failing sink is counted but never breaks a request.
 - Reverts are LIFO per dataset and must never create an endpoint clash. As a result, a revert can be refused until a conflicting dataset moves. Uniqueness takes priority over revertibility; see `invariants` for a minimal example.
 

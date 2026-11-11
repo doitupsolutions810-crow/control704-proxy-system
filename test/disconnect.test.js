@@ -56,6 +56,9 @@ test('R6-1: disconnect while the body is still being uploaded AFTER auth -> sett
   await sleep(200);
   assert.deepEqual(h.counts, { started: 10, settled: 10 });
   assert.equal(h.app.store.listOverrides('X').length, 0);
+  const log = h.app.audit.recent(10000);
+  assert.equal(log.filter((e) => e.type === 'request.aborted').length, 10, 'mid-upload disconnects are audited as aborted');
+  assert.equal(log.filter((e) => e.type === 'error').length, 0, 'and never as server errors');
 });
 
 test('R6-1: revert requests whose client vanished mid-auth do not revert', async (t) => {

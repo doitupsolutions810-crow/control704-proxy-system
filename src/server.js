@@ -105,7 +105,9 @@ function readJson(req, res) {
       }
       resolve(parsed);
     });
-    req.on('error', reject);
+    // Node reports a client disconnect mid-body as an 'aborted' stream error; classify it as
+    // ClientGoneError so it is audited as request.aborted rather than as a server error.
+    req.on('error', (err) => { settled = true; reject(clientGone(req, res) ? new ClientGoneError() : err); });
     // A disconnect mid-body emits 'close' without 'end'; settle instead of hanging forever.
     req.on('close', () => { if (!req.complete && !settled) { settled = true; reject(new ClientGoneError()); } });
   });
